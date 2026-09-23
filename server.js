@@ -14,6 +14,8 @@ const today = () => new Date().toISOString().slice(0, 10);
 const sha256 = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
 const cents = value => Math.round(Number(value || 0) * 100);
 const clean = value => String(value ?? '').trim();
+const optionalNumber = value => clean(value) === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+const taxIncluded = value => ![false, 0, '0', 'false'].includes(value);
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static('public'));
@@ -22,12 +24,17 @@ function clientById(id) {
   return row('SELECT * FROM clients WHERE id = ?', Number(id));
 }
 
+function siteById(id) {
+  return row('SELECT * FROM sites WHERE id = ?', Number(id));
+}
+
 function liveInvoice(id) {
   const invoice = row('SELECT * FROM invoices WHERE id = ?', Number(id));
   if (!invoice) return null;
   const client = clientById(invoice.client_id);
+  const site = invoice.site_id ? siteById(invoice.site_id) : null;
   const lines = rows('SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY position, id', invoice.id);
-  return { invoice, client, lines, owner: owner() };
+  return { invoice, client, site, lines, owner: owner() };
 }
 
 function materializedInvoice(id) {
@@ -39,11 +46,15 @@ function materializedInvoice(id) {
 }
 
 function publicInvoice(value) {
-  return { ...value.invoice, client: value.client, lines: value.lines, owner: value.owner };
+  return { ...value.invoice, client: value.client, site: value.site, lines: value.lines, owner: value.owner };
+}
+
+function lineTotal(line) {
+  return Math.round(Number(line.quantity) * Number(line.unit_price_cents) * (taxIncluded(line.tax_included) ? 1 : 1.2));
 }
 
 function invoiceTotal(lines) {
-  return lines.reduce((sum, line) => sum + Math.round(Number(line.quantity) * Number(line.unit_price_cents)), 0);
+  return lines.reduce((sum, line) => sum + lineTotal(line), 0);
 }
 
 function normaliseLines(lines) {
@@ -53,16 +64,17 @@ function normaliseLines(lines) {
     const quantity = Number(line.quantity);
     const unitPrice = line.unit_price_cents !== undefined ? Math.round(Number(line.unit_price_cents)) : cents(line.unit_price);
     if (!description) throw new Error(`La ligne ${position + 1} doit avoir une description.`);
-    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error(`La quantité de la ligne ${position + 1} est invalide.`);
+    if (!Number.isInteger(quantity) || quantity < 1) throw new Error(`La quantité de la ligne ${position + 1} doit être un entier naturel.`);
     if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error(`Le tarif de la ligne ${position + 1} est invalide.`);
-    return { description, quantity, unit_price_cents: unitPrice, service_date: clean(line.service_date) || null, position };
+    const tax_included = taxIncluded(line.tax_included);
+    return { description, quantity, unit_price_cents: unitPrice, tax_included, service_date: clean(line.service_date) || null, position };
   });
 }
 
 async function archive(invoiceId) {
   const material = materializedInvoice(invoiceId);
   if (!material) throw new Error('Facture introuvable.');
-  const pdf = await makeInvoicePdf(material.invoice, material.owner, material.client, material.lines);
+  const pdf = await makeInvoicePdf(material.invoice, material.owner, material.client, material.lines, material.site);
   const digest = sha256(pdf);
   const year = material.invoice.issue_date.slice(0, 4);
   const targetDir = path.join(archiveDir, year);
@@ -146,18 +158,47 @@ app.delete('/api/clients/:id', (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/sites', (_req, res) => res.json(rows('SELECT * FROM sites ORDER BY label COLLATE NOCASE')));
+app.post('/api/sites', (req, res, next) => {
+  try {
+    const b = req.body;
+    if (!clean(b.label)) throw new Error('Le label du site est requis.');
+    const result = run('INSERT INTO sites(label,address,reference_first_name,reference_last_name,reference_phone,reference_email,latitude,longitude) VALUES (?,?,?,?,?,?,?,?)', clean(b.label), clean(b.address), clean(b.reference_first_name), clean(b.reference_last_name), clean(b.reference_phone), clean(b.reference_email), optionalNumber(b.latitude), optionalNumber(b.longitude));
+    res.status(201).json(siteById(result.lastInsertRowid));
+  } catch (error) { next(error); }
+});
+app.put('/api/sites/:id', (req, res, next) => {
+  try {
+    const b = req.body;
+    if (!clean(b.label)) throw new Error('Le label du site est requis.');
+    run('UPDATE sites SET label=?,address=?,reference_first_name=?,reference_last_name=?,reference_phone=?,reference_email=?,latitude=?,longitude=? WHERE id=?', clean(b.label), clean(b.address), clean(b.reference_first_name), clean(b.reference_last_name), clean(b.reference_phone), clean(b.reference_email), optionalNumber(b.latitude), optionalNumber(b.longitude), Number(req.params.id));
+    const saved = siteById(req.params.id); if (!saved) return res.status(404).json({ error: 'Site introuvable.' });
+    res.json(saved);
+  } catch (error) { next(error); }
+});
+app.delete('/api/sites/:id', (req, res, next) => {
+  try {
+    const used = row('SELECT 1 FROM invoices WHERE site_id=? LIMIT 1', Number(req.params.id));
+    if (used) return res.status(409).json({ error: 'Ce site est utilisé par une facture et ne peut pas être supprimé.' });
+    run('DELETE FROM sites WHERE id=?', Number(req.params.id));
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
 app.get('/api/services', (_req, res) => res.json(rows('SELECT * FROM services ORDER BY name COLLATE NOCASE')));
 app.post('/api/services', (req, res, next) => {
   try {
     const b = req.body; if (!clean(b.name)) throw new Error('Le nom du service est requis.');
-    const result = run('INSERT INTO services(name,description,unit_price_cents,default_quantity) VALUES (?,?,?,?)', clean(b.name), clean(b.description), cents(b.unit_price), Number(b.default_quantity || 1));
+    const quantity = Number(b.default_quantity || 1); if (!Number.isInteger(quantity) || quantity < 1) throw new Error('La quantité par défaut doit être un entier naturel.');
+    const result = run('INSERT INTO services(name,description,unit_price_cents,default_quantity) VALUES (?,?,?,?)', clean(b.name), clean(b.description), cents(b.unit_price), quantity);
     res.status(201).json(row('SELECT * FROM services WHERE id=?', result.lastInsertRowid));
   } catch (error) { next(error); }
 });
 app.put('/api/services/:id', (req, res, next) => {
   try {
     const b = req.body; if (!clean(b.name)) throw new Error('Le nom du service est requis.');
-    run('UPDATE services SET name=?,description=?,unit_price_cents=?,default_quantity=? WHERE id=?', clean(b.name), clean(b.description), cents(b.unit_price), Number(b.default_quantity || 1), Number(req.params.id));
+    const quantity = Number(b.default_quantity || 1); if (!Number.isInteger(quantity) || quantity < 1) throw new Error('La quantité par défaut doit être un entier naturel.');
+    run('UPDATE services SET name=?,description=?,unit_price_cents=?,default_quantity=? WHERE id=?', clean(b.name), clean(b.description), cents(b.unit_price), quantity, Number(req.params.id));
     const saved = row('SELECT * FROM services WHERE id=?', Number(req.params.id)); if (!saved) return res.status(404).json({ error: 'Service introuvable.' });
     res.json(saved);
   } catch (error) { next(error); }
@@ -178,7 +219,9 @@ app.post('/api/invoices', (req, res, next) => {
     const client = clientById(b.client_id);
     if (!client) return res.status(400).json({ error: 'Sélectionnez un client.' });
     const issueDate = clean(b.issue_date) || today();
-    const result = run('INSERT INTO invoices(number,client_id,issue_date,due_date,notes) VALUES (?,?,?,?,?)', nextNumber(), client.id, issueDate, clean(b.due_date) || dueDate(issueDate), clean(b.notes));
+    const site = b.site_id ? siteById(b.site_id) : null;
+    if (b.site_id && !site) return res.status(400).json({ error: 'Sélectionnez un site valide.' });
+    const result = run('INSERT INTO invoices(number,client_id,site_id,issue_date,due_date,notes) VALUES (?,?,?,?,?,?)', nextNumber(), client.id, site?.id || null, issueDate, clean(b.due_date) || dueDate(issueDate), clean(b.notes));
     res.status(201).json(publicInvoice(liveInvoice(result.lastInsertRowid)));
   } catch (error) { next(error); }
 });
@@ -186,14 +229,15 @@ app.put('/api/invoices/:id', (req, res, next) => {
   try {
     const existing = liveInvoice(req.params.id); if (!existing) return res.status(404).json({ error: 'Facture introuvable.' });
     if (existing.invoice.status !== 'draft') return res.status(409).json({ error: 'Une facture émise est figée. Créez un avoir ou une nouvelle facture.' });
-    const b = req.body, client = clientById(b.client_id);
+    const b = req.body, client = clientById(b.client_id), site = b.site_id ? siteById(b.site_id) : null;
     if (!client) return res.status(400).json({ error: 'Sélectionnez un client.' });
+    if (b.site_id && !site) return res.status(400).json({ error: 'Sélectionnez un site valide.' });
     const lines = normaliseLines(b.lines);
     db.exec('BEGIN');
     try {
-      run('UPDATE invoices SET client_id=?,issue_date=?,due_date=?,notes=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', client.id, clean(b.issue_date) || today(), clean(b.due_date) || dueDate(clean(b.issue_date) || today()), clean(b.notes), invoiceTotal(lines), existing.invoice.id);
+      run('UPDATE invoices SET client_id=?,site_id=?,issue_date=?,due_date=?,notes=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', client.id, site?.id || null, clean(b.issue_date) || today(), clean(b.due_date) || dueDate(clean(b.issue_date) || today()), clean(b.notes), invoiceTotal(lines), existing.invoice.id);
       run('DELETE FROM invoice_lines WHERE invoice_id=?', existing.invoice.id);
-      for (const line of lines) run('INSERT INTO invoice_lines(invoice_id,description,quantity,unit_price_cents,service_date,position) VALUES (?,?,?,?,?,?)', existing.invoice.id, line.description, line.quantity, line.unit_price_cents, line.service_date, line.position);
+      for (const line of lines) run('INSERT INTO invoice_lines(invoice_id,description,quantity,unit_price_cents,tax_included,service_date,position) VALUES (?,?,?,?,?,?,?)', existing.invoice.id, line.description, line.quantity, line.unit_price_cents, line.tax_included ? 1 : 0, line.service_date, line.position);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     res.json(publicInvoice(liveInvoice(existing.invoice.id)));
@@ -222,7 +266,7 @@ app.get('/api/invoices/:id/pdf', async (req, res, next) => {
     const material = materializedInvoice(req.params.id); if (!material) return res.status(404).json({ error: 'Facture introuvable.' });
     let pdf;
     if (material.invoice.archived_path) pdf = await fs.readFile(path.resolve(material.invoice.archived_path));
-    else pdf = await makeInvoicePdf(material.invoice, material.owner, material.client, material.lines);
+    else pdf = await makeInvoicePdf(material.invoice, material.owner, material.client, material.lines, material.site);
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="facture-${material.invoice.number}.pdf"` }).send(pdf);
   } catch (error) { next(error); }
 });
