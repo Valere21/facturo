@@ -76,9 +76,15 @@ function renderDashboard() {
 }
 
 function renderInvoices() {
-  const rows = state.invoices.length ? state.invoices.map(i => `<tr class="invoice-row" tabindex="0" role="button" data-action="open-invoice" data-id="${i.id}"><td><strong>${esc(i.number)}</strong><br><span class="subtle">${date(i.issue_date)}</span></td><td><div class="client-cell"><strong>${esc(i.client_name)}</strong><span>Échéance ${date(i.due_date)}</span></div></td><td>${invoiceBadge(i)}</td><td>${serverControl(i)}</td><td>${clientMailControl(i)}</td><td class="money">${euro(i.total_cents)}</td><td class="actions"><button class="link-button" data-action="pdf" data-id="${i.id}">PDF</button>${i.status === 'draft' ? `<button class="link-button red" data-action="delete-invoice" data-id="${i.id}">Supprimer</button>` : ''}</td></tr>`).join('') : `<tr><td colspan="7" class="empty">Aucune facture. Vous pouvez créer un brouillon dès maintenant.</td></tr>`;
+  const row = invoice => `<tr class="invoice-row" tabindex="0" role="button" data-action="open-invoice" data-id="${invoice.id}"><td><strong>${esc(invoice.number)}</strong><br><span class="subtle">${date(invoice.issue_date)}</span></td><td><div class="client-cell"><strong>${esc(invoice.client_name)}</strong><span>Échéance ${date(invoice.due_date)}</span></div></td><td>${invoiceBadge(invoice)}</td><td>${serverControl(invoice)}</td><td>${clientMailControl(invoice)}</td><td class="money">${euro(invoice.total_cents)}</td><td class="actions"><button class="link-button" data-action="pdf" data-id="${invoice.id}">PDF</button>${invoice.status === 'draft' ? `<button class="link-button red" data-action="delete-invoice" data-id="${invoice.id}">Supprimer</button>` : ''}</td></tr>`;
+  const table = (invoices, empty) => `<div class="table-wrap"><table class="data-table"><thead><tr><th>Facture</th><th>Client</th><th>Statut</th><th>Serveur</th><th>E-mail client</th><th>Total TTC</th><th></th></tr></thead><tbody>${invoices.length ? invoices.map(row).join('') : `<tr><td colspan="7" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
+  const drafts = state.invoices.filter(invoice => invoice.status === 'draft');
+  const validated = state.invoices.filter(invoice => invoice.status !== 'draft');
   app.innerHTML = `${viewHeader('Facturation', 'Vos factures', 'Les factures émises sont figées et archivées avec une empreinte de contrôle.', '<button class="button" data-action="new-invoice">＋ Nouvelle facture</button>')}
-    <article class="card panel"><div class="filter-bar"><div><h2>Historique</h2><p class="helper">Cliquez sur une ligne pour l’ouvrir · Serveur et e-mail client sont deux actions distinctes.</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Facture</th><th>Client</th><th>Statut</th><th>Serveur</th><th>E-mail client</th><th>Total TTC</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></article>`;
+    <section class="invoice-sections">
+      <article class="card panel"><div class="invoice-section-heading"><h2>Brouillons</h2><p class="helper">${drafts.length} facture${drafts.length > 1 ? 's' : ''} à préparer ou finaliser.</p></div>${table(drafts, 'Aucun brouillon pour le moment.')}</article>
+      <article class="card panel"><div class="invoice-section-heading"><h2>Avoirs</h2><p class="helper">Factures validées · ${validated.length} document${validated.length > 1 ? 's' : ''} émis.</p></div>${table(validated, 'Aucune facture validée pour le moment.')}</article>
+    </section>`;
 }
 
 function renderClients() {
