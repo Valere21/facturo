@@ -127,11 +127,11 @@ async function createBackup() {
       documents.push({ invoice_id: invoice.id, sha256: sha256(content), content_base64: content.toString('base64') });
     } catch (error) { warnings.push(`Facture ${invoice.number} : PDF non joint (${error.message}).`); }
   }
-  return { format: 'facturato-backup', version: 1, exported_at: new Date().toISOString(), data, documents, warnings };
+  return { format: 'facturo-backup', version: 1, exported_at: new Date().toISOString(), data, documents, warnings };
 }
 
 function requireBackupData(backup) {
-  if (!backup || backup.format !== 'facturato-backup' || backup.version !== 1 || !backup.data) throw new Error('Fichier de sauvegarde Facturato invalide.');
+  if (!backup || backup.format !== 'facturo-backup' || backup.version !== 1 || !backup.data) throw new Error('Fichier de sauvegarde Facturo invalide.');
   for (const table of ['settings', 'clients', 'sites', 'services', 'invoices', 'invoice_lines', 'archive_records']) {
     if (!Array.isArray(backup.data[table])) throw new Error(`Sauvegarde invalide : table ${table} absente.`);
   }
@@ -224,7 +224,7 @@ app.get('/api/backup/export', async (_req, res, next) => {
   try {
     const backup = await createBackup();
     const stamp = new Date().toISOString().slice(0, 10);
-    res.set({ 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="facturato-sauvegarde-${stamp}.json"` }).send(JSON.stringify(backup));
+    res.set({ 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="facturo-sauvegarde-${stamp}.json"` }).send(JSON.stringify(backup));
   } catch (error) { next(error); }
 });
 app.post('/api/backup/import', async (req, res, next) => {
@@ -406,4 +406,4 @@ app.use((error, _req, res, _next) => {
   res.status(400).json({ error: error.message || 'Une erreur est survenue.' });
 });
 
-app.listen(port, () => console.log(`Facturato prêt sur http://localhost:${port}`));
+app.listen(port, () => console.log(`Facturo prêt sur http://localhost:${port}`));

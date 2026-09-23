@@ -304,4 +304,4 @@ document.addEventListener('submit', async event => {
 document.querySelector('#menu-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('open'));
 window.addEventListener('hashchange', () => render(location.hash.slice(1) || 'dashboard'));
 
-try { await refresh(); render(location.hash.slice(1) || 'dashboard'); } catch (error) { app.innerHTML = `<div class="card panel"><h2>Facturato ne démarre pas</h2><p class="subhead">${esc(error.message)}</p></div>`; }
+try { await refresh(); render(location.hash.slice(1) || 'dashboard'); } catch (error) { app.innerHTML = `<div class="card panel"><h2>Facturo ne démarre pas</h2><p class="subhead">${esc(error.message)}</p></div>`; }
