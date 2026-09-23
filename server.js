@@ -112,7 +112,7 @@ async function sendInvoiceEmail(material, pdf, requestedRecipient = '') {
   return recipient;
 }
 
-async function archiveAndNotify(invoiceId) {
+async function archiveOnServer(invoiceId) {
   const live = liveInvoice(invoiceId);
   if (!live) throw new Error('Facture introuvable.');
   if (live.invoice.status === 'draft') {
@@ -121,18 +121,8 @@ async function archiveAndNotify(invoiceId) {
   }
   const current = row('SELECT * FROM invoices WHERE id=?', live.invoice.id);
   const archiveResult = current.archived_path ? null : await archive(live.invoice.id);
-  const material = materializedInvoice(live.invoice.id);
-  let email;
-  try {
-    const recipient = await sendInvoiceEmail(material, archiveResult?.pdf);
-    run("UPDATE invoices SET status='sent', updated_at=CURRENT_TIMESTAMP WHERE id=?", live.invoice.id);
-    email = { ok: true, to: recipient };
-  } catch (error) {
-    // La copie durable est prioritaire : un SMTP indisponible ne l’annule jamais.
-    email = { ok: false, error: error.message };
-  }
   const archived = archiveResult ? { digest: archiveResult.digest, path: archiveResult.path, bytes: archiveResult.bytes } : await verifyArchive(current);
-  return { invoice: publicInvoice(materializedInvoice(live.invoice.id)), archive: archived, email };
+  return { invoice: publicInvoice(materializedInvoice(live.invoice.id)), archive: archived };
 }
 
 function dueDate(issueDate) {
@@ -291,11 +281,11 @@ app.delete('/api/invoices/:id', (req, res, next) => {
 });
 app.post('/api/invoices/:id/issue', async (req, res, next) => {
   try {
-    res.json(await archiveAndNotify(req.params.id));
+    res.json(await archiveOnServer(req.params.id));
   } catch (error) { next(error); }
 });
 app.post('/api/invoices/:id/archive', async (req, res, next) => {
-  try { res.json(await archiveAndNotify(req.params.id)); } catch (error) { next(error); }
+  try { res.json(await archiveOnServer(req.params.id)); } catch (error) { next(error); }
 });
 app.get('/api/invoices/:id/pdf', async (req, res, next) => {
   try {

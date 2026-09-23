@@ -50,7 +50,13 @@ function invoiceBadge(invoice) {
 function serverControl(invoice) {
   return invoice.archived_path
     ? `<button class="server-control ok" data-action="check-archive" data-id="${invoice.id}" title="Vérifier l’intégrité de la copie serveur">● Serveur</button>`
-    : `<button class="server-control" data-action="archive-on-server" data-id="${invoice.id}" title="Archiver sur le serveur et envoyer au client">○ À archiver</button>`;
+    : `<button class="server-control" data-action="archive-on-server" data-id="${invoice.id}" title="Archiver sur le serveur">○ À archiver</button>`;
+}
+
+function clientMailControl(invoice) {
+  if (invoice.status === 'sent') return '<span class="server-control ok">● Envoyée</span>';
+  if (invoice.status === 'draft') return '<span class="server-control muted">○ À archiver</span>';
+  return `<button class="server-control" data-action="email-invoice" data-id="${invoice.id}" title="Envoyer la facture au client">○ Envoyer</button>`;
 }
 
 function renderDashboard() {
@@ -70,9 +76,9 @@ function renderDashboard() {
 }
 
 function renderInvoices() {
-  const rows = state.invoices.length ? state.invoices.map(i => `<tr class="invoice-row" tabindex="0" role="button" data-action="open-invoice" data-id="${i.id}"><td><strong>${esc(i.number)}</strong><br><span class="subtle">${date(i.issue_date)}</span></td><td><div class="client-cell"><strong>${esc(i.client_name)}</strong><span>Échéance ${date(i.due_date)}</span></div></td><td>${invoiceBadge(i)}</td><td>${serverControl(i)}</td><td class="money">${euro(i.total_cents)}</td><td class="actions"><button class="link-button" data-action="pdf" data-id="${i.id}">PDF</button>${i.status === 'draft' ? `<button class="link-button red" data-action="delete-invoice" data-id="${i.id}">Supprimer</button>` : ''}</td></tr>`).join('') : `<tr><td colspan="6" class="empty">Aucune facture. Vous pouvez créer un brouillon dès maintenant.</td></tr>`;
+  const rows = state.invoices.length ? state.invoices.map(i => `<tr class="invoice-row" tabindex="0" role="button" data-action="open-invoice" data-id="${i.id}"><td><strong>${esc(i.number)}</strong><br><span class="subtle">${date(i.issue_date)}</span></td><td><div class="client-cell"><strong>${esc(i.client_name)}</strong><span>Échéance ${date(i.due_date)}</span></div></td><td>${invoiceBadge(i)}</td><td>${serverControl(i)}</td><td>${clientMailControl(i)}</td><td class="money">${euro(i.total_cents)}</td><td class="actions"><button class="link-button" data-action="pdf" data-id="${i.id}">PDF</button>${i.status === 'draft' ? `<button class="link-button red" data-action="delete-invoice" data-id="${i.id}">Supprimer</button>` : ''}</td></tr>`).join('') : `<tr><td colspan="7" class="empty">Aucune facture. Vous pouvez créer un brouillon dès maintenant.</td></tr>`;
   app.innerHTML = `${viewHeader('Facturation', 'Vos factures', 'Les factures émises sont figées et archivées avec une empreinte de contrôle.', '<button class="button" data-action="new-invoice">＋ Nouvelle facture</button>')}
-    <article class="card panel"><div class="filter-bar"><div><h2>Historique</h2><p class="helper">Cliquez sur une ligne pour l’ouvrir · ${state.invoices.length} document${state.invoices.length > 1 ? 's' : ''}</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Facture</th><th>Client</th><th>Statut</th><th>Serveur</th><th>Total TTC</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></article>`;
+    <article class="card panel"><div class="filter-bar"><div><h2>Historique</h2><p class="helper">Cliquez sur une ligne pour l’ouvrir · Serveur et e-mail client sont deux actions distinctes.</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Facture</th><th>Client</th><th>Statut</th><th>Serveur</th><th>E-mail client</th><th>Total TTC</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></article>`;
 }
 
 function renderClients() {
@@ -187,9 +193,20 @@ async function archiveInvoice(id) {
   const result = await api(`/api/invoices/${id}/archive`, { method:'POST' });
   await refresh();
   if (state.editor?.id === Number(id)) state.editor = result.invoice;
-  if (result.email.ok) toast(`Facture archivée sur le serveur et envoyée à ${result.email.to}.`);
-  else toast(`Facture archivée sur le serveur, mais l’e-mail n’a pas pu partir : ${result.email.error}`, true);
+  toast('Facture archivée et vérifiée sur le serveur.');
   return result;
+}
+
+async function emailInvoice(id) {
+  const invoice = await api(`/api/invoices/${id}`);
+  if (invoice.status === 'draft') throw new Error('Archivez d’abord la facture sur le serveur.');
+  const to = prompt('Adresse e-mail du destinataire', invoice.client?.email || '');
+  if (to === null) return;
+  const result = await api(`/api/invoices/${id}/email`, { method:'POST', body:JSON.stringify({ to }) });
+  const updated = await api(`/api/invoices/${id}`);
+  await refresh();
+  if (state.editor?.id === Number(id)) state.editor = updated;
+  toast(`Facture envoyée à ${result.to}.`);
 }
 
 app.addEventListener('click', async event => {
@@ -215,8 +232,8 @@ app.addEventListener('click', async event => {
     if (action === 'add-line') { state.editor.lines.push(freshLine()); renderEditor(); }
     if (action === 'remove-line') { state.editor.lines.splice(Number(index), 1); renderEditor(); }
     if (action === 'save-invoice') await saveInvoice();
-    if (action === 'issue-invoice') { await saveInvoice(true); if (confirm('Archiver cette facture sur le serveur et l’envoyer au client ? Elle sera figée.')) { await archiveInvoice(id); renderEditor(); } }
-    if (action === 'archive-on-server' && confirm('Archiver cette facture sur le serveur et l’envoyer au client ?')) { await archiveInvoice(id); render('invoices'); }
+    if (action === 'issue-invoice') { await saveInvoice(true); if (confirm('Archiver cette facture sur le serveur ? Elle sera figée.')) { await archiveInvoice(id); renderEditor(); } }
+    if (action === 'archive-on-server' && confirm('Archiver cette facture sur le serveur ?')) { await archiveInvoice(id); render('invoices'); }
     if (action === 'delete-invoice' && confirm('Supprimer ce brouillon ?')) { await api(`/api/invoices/${id}`, { method:'DELETE' }); state.editor = null; await refresh(); location.hash = '#invoices'; render('invoices'); toast('Brouillon supprimé.'); }
     if (action === 'pdf') {
       if (location.hash === `#invoice/${id}` && state.editor?.id === Number(id) && state.editor.status === 'draft') {
@@ -226,7 +243,7 @@ app.addEventListener('click', async event => {
       window.open(`/api/invoices/${id}/pdf`, '_blank', 'noopener');
     }
     if (action === 'check-archive') { const check = await api(`/api/invoices/${id}/archive-check`); toast(check.ok ? `Archive intègre · ${check.bytes} octets relus.` : check.reason, !check.ok); }
-    if (action === 'email') { const to = prompt('Adresse e-mail du destinataire', state.editor.client?.email || ''); if (to !== null) { const result = await api(`/api/invoices/${id}/email`, { method:'POST', body:JSON.stringify({ to }) }); await refresh(); toast(`Facture envoyée à ${result.to}.`); } }
+    if (action === 'email' || action === 'email-invoice') { await emailInvoice(id); if (location.hash === `#invoice/${id}`) renderEditor(); else render('invoices'); }
     if (action === 'locate-site') {
       const form = modalContent.querySelector('#site-form');
       const address = form.elements.address.value.trim();
