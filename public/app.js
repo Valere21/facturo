@@ -115,7 +115,8 @@ function renderSettings() {
     <div class="field full"><label>Adresse</label><input class="input" name="address" value="${esc(o.address)}"></div><div class="field"><label>SIRET</label><input class="input" name="siret" value="${esc(o.siret)}"></div><div class="field"><label>Téléphone</label><input class="input" name="phone" value="${esc(o.phone)}"></div>
     <div class="field"><label>E-mail</label><input class="input" type="email" name="email" value="${esc(o.email)}"></div><div class="field"><label>Banque</label><input class="input" name="bank" value="${esc(o.bank)}"></div><div class="field full"><label>IBAN</label><input class="input" name="iban" value="${esc(o.iban)}"></div>
     <div class="field full"><label>Conditions de paiement</label><textarea class="textarea" name="paymentTerms">${esc(o.paymentTerms)}</textarea><p class="helper">Le statut micro-entreprise et la mention « TVA non applicable, art. 293 B du CGI » figurent toujours sur le PDF.</p></div>
-  </div><div class="form-actions"><button class="button" type="submit">Enregistrer les informations</button></div></form>`;
+  </div><div class="form-actions"><button class="button" type="submit">Enregistrer les informations</button></div></form>
+  <section class="card config-card backup-card"><h2>Sauvegarde portable</h2><p class="subhead">Exporte vos réglages, clients, sites, prestations, factures et PDF archivés dans un fichier unique à conserver hors du Raspberry Pi.</p><div class="backup-actions"><button class="button secondary" data-action="export-backup">↓ Extraire les données</button><button class="button ghost" data-action="restore-backup">↑ Restaurer une sauvegarde</button><input id="backup-file" type="file" accept="application/json,.json" hidden></div><p class="helper">La restauration remplace les données actuellement présentes sur cette instance.</p></section>`;
 }
 
 function freshLine() { return { description: '', quantity: 1, unit_price_cents: 0, tax_included: true, site_id: null, service_date: today() }; }
@@ -209,11 +210,26 @@ async function emailInvoice(id) {
   toast(`Facture envoyée à ${result.to}.`);
 }
 
+async function importBackup(file) {
+  if (!file) return;
+  let backup;
+  try { backup = JSON.parse(await file.text()); } catch { throw new Error('Ce fichier n’est pas une sauvegarde JSON valide.'); }
+  if (!confirm('Restaurer cette sauvegarde ? Les données locales actuelles seront remplacées.')) return;
+  const result = await api('/api/backup/import', { method:'POST', body:JSON.stringify({ confirm:true, backup }) });
+  state.editor = null;
+  await refresh();
+  location.hash = '#settings';
+  render('settings');
+  toast(`Sauvegarde restaurée : ${result.restored.clients} client(s), ${result.restored.invoices} facture(s).`);
+}
+
 app.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]'); if (!button) return;
   const { action, id, index } = button.dataset;
   try {
     if (action === 'new-invoice') await newInvoice();
+    if (action === 'export-backup') window.location.assign('/api/backup/export');
+    if (action === 'restore-backup') document.querySelector('#backup-file')?.click();
     if (action === 'open-invoice') await openInvoice(id);
     if (action === 'back-invoices') location.hash = '#invoices';
     if (action === 'new-client') clientModal();
@@ -262,6 +278,7 @@ app.addEventListener('click', async event => {
 });
 
 app.addEventListener('change', event => {
+  if (event.target.id === 'backup-file') { importBackup(event.target.files?.[0]).catch(error => toast(error.message, true)); return; }
   if (event.target.dataset.invoice || event.target.dataset.line) updateEditorFromInput(event.target);
   if (event.target.id === 'service-preset' && event.target.value) { const service = state.services.find(s => s.id === Number(event.target.value)); if (service) { state.editor.lines.push({ description:service.description || service.name, quantity:service.default_quantity, unit_price_cents:service.unit_price_cents, tax_included:true, site_id:null, service_date:today() }); renderEditor(); } }
 });

@@ -17,7 +17,7 @@ const clean = value => String(value ?? '').trim();
 const optionalNumber = value => clean(value) === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const taxIncluded = value => ![false, 0, '0', 'false'].includes(value);
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use(express.static('public'));
 
 function clientById(id) {
@@ -102,6 +102,80 @@ async function verifyArchive(invoice) {
   } catch { return { ok: false, reason: 'Fichier absent ou illisible', path: invoice.archived_path }; }
 }
 
+function archiveFilePath(relativePath) {
+  const root = path.resolve(archiveDir);
+  const file = path.resolve(relativePath || '');
+  if (!relativePath || (file !== root && !file.startsWith(`${root}${path.sep}`))) throw new Error('Chemin d’archive invalide dans la sauvegarde.');
+  return file;
+}
+
+async function createBackup() {
+  const data = {
+    settings: rows('SELECT key,value FROM settings ORDER BY key'),
+    clients: rows('SELECT * FROM clients ORDER BY id'),
+    sites: rows('SELECT * FROM sites ORDER BY id'),
+    services: rows('SELECT * FROM services ORDER BY id'),
+    invoices: rows('SELECT * FROM invoices ORDER BY id'),
+    invoice_lines: rows('SELECT * FROM invoice_lines ORDER BY id'),
+    archive_records: rows('SELECT * FROM archive_records ORDER BY id')
+  };
+  const documents = [], warnings = [];
+  for (const invoice of data.invoices.filter(item => item.archived_path)) {
+    try {
+      const content = await fs.readFile(archiveFilePath(invoice.archived_path));
+      if (invoice.archive_sha256 && sha256(content) !== invoice.archive_sha256) throw new Error('empreinte différente');
+      documents.push({ invoice_id: invoice.id, sha256: sha256(content), content_base64: content.toString('base64') });
+    } catch (error) { warnings.push(`Facture ${invoice.number} : PDF non joint (${error.message}).`); }
+  }
+  return { format: 'facturato-backup', version: 1, exported_at: new Date().toISOString(), data, documents, warnings };
+}
+
+function requireBackupData(backup) {
+  if (!backup || backup.format !== 'facturato-backup' || backup.version !== 1 || !backup.data) throw new Error('Fichier de sauvegarde Facturato invalide.');
+  for (const table of ['settings', 'clients', 'sites', 'services', 'invoices', 'invoice_lines', 'archive_records']) {
+    if (!Array.isArray(backup.data[table])) throw new Error(`Sauvegarde invalide : table ${table} absente.`);
+  }
+}
+
+function insertRows(table, fields, values) {
+  const sql = `INSERT INTO ${table}(${fields.join(',')}) VALUES (${fields.map(() => '?').join(',')})`;
+  for (const value of values) run(sql, ...fields.map(field => value[field] ?? null));
+}
+
+async function restoreBackup(backup) {
+  requireBackupData(backup);
+  const invoiceById = new Map(backup.data.invoices.map(invoice => [Number(invoice.id), invoice]));
+  const documents = Array.isArray(backup.documents) ? backup.documents : [];
+  const documentsByInvoice = new Map(documents.map(document => [Number(document.invoice_id), document]));
+  const requiredDocuments = backup.data.invoices.filter(invoice => invoice.archived_path);
+  if (documentsByInvoice.size !== requiredDocuments.length || requiredDocuments.some(invoice => !documentsByInvoice.has(Number(invoice.id)))) throw new Error('La sauvegarde ne contient pas tous les PDF archivés.');
+  for (const invoice of requiredDocuments) {
+    const document = documentsByInvoice.get(Number(invoice.id));
+    if (!invoice?.archived_path || typeof document.content_base64 !== 'string') throw new Error('Document PDF invalide dans la sauvegarde.');
+    const content = Buffer.from(document.content_base64, 'base64');
+    const digest = sha256(content);
+    if (digest !== document.sha256 || (invoice.archive_sha256 && digest !== invoice.archive_sha256)) throw new Error(`PDF de la facture ${invoice.number} corrompu.`);
+    const target = archiveFilePath(invoice.archived_path);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${process.pid}.restore`;
+    await fs.writeFile(temporary, content, { mode: 0o640 });
+    await fs.rename(temporary, target);
+  }
+  db.exec('BEGIN');
+  try {
+    for (const table of ['archive_records', 'invoice_lines', 'invoices', 'services', 'sites', 'clients', 'settings']) db.exec(`DELETE FROM ${table}`);
+    insertRows('settings', ['key', 'value'], backup.data.settings);
+    insertRows('clients', ['id', 'name', 'contact', 'email', 'phone', 'address', 'siren', 'created_at'], backup.data.clients);
+    insertRows('sites', ['id', 'label', 'address', 'reference_first_name', 'reference_last_name', 'reference_phone', 'reference_email', 'latitude', 'longitude', 'created_at'], backup.data.sites);
+    insertRows('services', ['id', 'name', 'description', 'unit_price_cents', 'default_quantity', 'created_at'], backup.data.services);
+    insertRows('invoices', ['id', 'number', 'client_id', 'status', 'issue_date', 'due_date', 'notes', 'total_cents', 'snapshot', 'archived_path', 'archive_sha256', 'verified_at', 'created_at', 'updated_at', 'site_id'], backup.data.invoices);
+    insertRows('invoice_lines', ['id', 'invoice_id', 'description', 'quantity', 'unit_price_cents', 'service_date', 'position', 'tax_included', 'site_id'], backup.data.invoice_lines);
+    insertRows('archive_records', ['id', 'invoice_id', 'path', 'sha256', 'bytes', 'verified_at', 'created_at'], backup.data.archive_records);
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+  return { clients: backup.data.clients.length, sites: backup.data.sites.length, services: backup.data.services.length, invoices: backup.data.invoices.length, documents: documents.length };
+}
+
 async function sendInvoiceEmail(material, pdf, requestedRecipient = '') {
   if (!process.env.SMTP_HOST || !process.env.MAIL_FROM) throw new Error('Configurez SMTP_HOST et MAIL_FROM dans .env pour activer l’envoi.');
   const recipient = clean(requestedRecipient) || material.client.email;
@@ -143,6 +217,21 @@ app.get('/api/dashboard', async (_req, res, next) => {
       recent: invoices.slice(0, 6),
       warnings: checks.filter(c => !c.ok)
     });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/backup/export', async (_req, res, next) => {
+  try {
+    const backup = await createBackup();
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.set({ 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="facturato-sauvegarde-${stamp}.json"` }).send(JSON.stringify(backup));
+  } catch (error) { next(error); }
+});
+app.post('/api/backup/import', async (req, res, next) => {
+  try {
+    if (req.body?.confirm !== true) throw new Error('Confirmez la restauration de la sauvegarde.');
+    const restored = await restoreBackup(req.body.backup);
+    res.json({ ok: true, restored });
   } catch (error) { next(error); }
 });
 
