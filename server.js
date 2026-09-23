@@ -33,7 +33,7 @@ function liveInvoice(id) {
   if (!invoice) return null;
   const client = clientById(invoice.client_id);
   const site = invoice.site_id ? siteById(invoice.site_id) : null;
-  const lines = rows('SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY position, id', invoice.id);
+  const lines = rows('SELECT l.*, s.label AS site_label FROM invoice_lines l LEFT JOIN sites s ON s.id=l.site_id WHERE l.invoice_id = ? ORDER BY l.position, l.id', invoice.id);
   return { invoice, client, site, lines, owner: owner() };
 }
 
@@ -67,7 +67,9 @@ function normaliseLines(lines) {
     if (!Number.isInteger(quantity) || quantity < 1) throw new Error(`La quantité de la ligne ${position + 1} doit être un entier naturel.`);
     if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error(`Le tarif de la ligne ${position + 1} est invalide.`);
     const tax_included = taxIncluded(line.tax_included);
-    return { description, quantity, unit_price_cents: unitPrice, tax_included, service_date: clean(line.service_date) || null, position };
+    const site_id = line.site_id ? Number(line.site_id) : null;
+    if (site_id && !siteById(site_id)) throw new Error(`Le site de la ligne ${position + 1} est introuvable.`);
+    return { description, quantity, unit_price_cents: unitPrice, tax_included, site_id, service_date: clean(line.service_date) || null, position };
   });
 }
 
@@ -178,7 +180,7 @@ app.put('/api/sites/:id', (req, res, next) => {
 });
 app.delete('/api/sites/:id', (req, res, next) => {
   try {
-    const used = row('SELECT 1 FROM invoices WHERE site_id=? LIMIT 1', Number(req.params.id));
+    const used = row('SELECT 1 FROM invoices WHERE site_id=? UNION SELECT 1 FROM invoice_lines WHERE site_id=? LIMIT 1', Number(req.params.id), Number(req.params.id));
     if (used) return res.status(409).json({ error: 'Ce site est utilisé par une facture et ne peut pas être supprimé.' });
     run('DELETE FROM sites WHERE id=?', Number(req.params.id));
     res.status(204).end();
@@ -229,15 +231,14 @@ app.put('/api/invoices/:id', (req, res, next) => {
   try {
     const existing = liveInvoice(req.params.id); if (!existing) return res.status(404).json({ error: 'Facture introuvable.' });
     if (existing.invoice.status !== 'draft') return res.status(409).json({ error: 'Une facture émise est figée. Créez un avoir ou une nouvelle facture.' });
-    const b = req.body, client = clientById(b.client_id), site = b.site_id ? siteById(b.site_id) : null;
+    const b = req.body, client = clientById(b.client_id);
     if (!client) return res.status(400).json({ error: 'Sélectionnez un client.' });
-    if (b.site_id && !site) return res.status(400).json({ error: 'Sélectionnez un site valide.' });
     const lines = normaliseLines(b.lines);
     db.exec('BEGIN');
     try {
-      run('UPDATE invoices SET client_id=?,site_id=?,issue_date=?,due_date=?,notes=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', client.id, site?.id || null, clean(b.issue_date) || today(), clean(b.due_date) || dueDate(clean(b.issue_date) || today()), clean(b.notes), invoiceTotal(lines), existing.invoice.id);
+      run('UPDATE invoices SET client_id=?,issue_date=?,due_date=?,notes=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', client.id, clean(b.issue_date) || today(), clean(b.due_date) || dueDate(clean(b.issue_date) || today()), clean(b.notes), invoiceTotal(lines), existing.invoice.id);
       run('DELETE FROM invoice_lines WHERE invoice_id=?', existing.invoice.id);
-      for (const line of lines) run('INSERT INTO invoice_lines(invoice_id,description,quantity,unit_price_cents,tax_included,service_date,position) VALUES (?,?,?,?,?,?,?)', existing.invoice.id, line.description, line.quantity, line.unit_price_cents, line.tax_included ? 1 : 0, line.service_date, line.position);
+      for (const line of lines) run('INSERT INTO invoice_lines(invoice_id,description,quantity,unit_price_cents,tax_included,site_id,service_date,position) VALUES (?,?,?,?,?,?,?,?)', existing.invoice.id, line.description, line.quantity, line.unit_price_cents, line.tax_included ? 1 : 0, line.site_id, line.service_date, line.position);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     res.json(publicInvoice(liveInvoice(existing.invoice.id)));

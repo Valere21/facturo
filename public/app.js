@@ -106,21 +106,21 @@ function renderSettings() {
   </div><div class="form-actions"><button class="button" type="submit">Enregistrer les informations</button></div></form>`;
 }
 
-function freshLine() { return { description: '', quantity: 1, unit_price_cents: 0, tax_included: true, service_date: today() }; }
+function freshLine() { return { description: '', quantity: 1, unit_price_cents: 0, tax_included: true, site_id: null, service_date: today() }; }
 
 function renderEditor() {
-  const e = state.editor, immutable = e.status !== 'draft', selectedClient = state.clients.find(c => c.id === Number(e.client_id)) || e.client, selectedSite = state.sites.find(s => s.id === Number(e.site_id)) || e.site;
+  const e = state.editor, immutable = e.status !== 'draft', selectedClient = state.clients.find(c => c.id === Number(e.client_id)) || e.client;
   const clientOptions = state.clients.map(c => `<option value="${c.id}" ${c.id === Number(e.client_id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
-  const siteOptions = `<option value="">Aucun site sélectionné</option>${state.sites.map(s => `<option value="${s.id}" ${s.id === Number(e.site_id) ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}`;
+  const siteOptions = siteId => `<option value="">Aucun site</option>${state.sites.map(s => `<option value="${s.id}" ${s.id === Number(siteId) ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}`;
   const serviceOptions = state.services.map(s => `<option value="${s.id}">${esc(s.name)} · ${euro(s.unit_price_cents)}</option>`).join('');
-  const lines = e.lines.length ? e.lines.map((line, index) => `<div class="line-grid"><input class="input description" data-line="${index}" data-key="description" value="${esc(line.description)}" placeholder="Description" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="quantity" type="number" step="1" min="1" value="${line.quantity}" ${immutable ? 'disabled' : ''}><input class="input date" data-line="${index}" data-key="service_date" type="date" value="${line.service_date || ''}" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="unit_price" type="number" step="0.01" min="0" value="${(line.unit_price_cents / 100).toFixed(2)}" ${immutable ? 'disabled' : ''}><label class="tax-check"><input data-line="${index}" data-key="tax_included" type="checkbox" ${taxIncluded(line.tax_included) ? 'checked' : ''} ${immutable ? 'disabled' : ''}><span>TVA comprise</span></label><span class="line-total total">${euro(lineAmount(line))}</span>${immutable ? '<span></span>' : `<button class="remove-line" data-action="remove-line" data-index="${index}" title="Retirer">×</button>`}</div>`).join('') : '<p class="empty">Ajoutez une ligne de prestation.</p>';
+  const lines = e.lines.length ? e.lines.map((line, index) => `<div class="line-grid"><select class="select site-line" data-line="${index}" data-key="site_id" ${immutable ? 'disabled' : ''}>${siteOptions(line.site_id)}</select><input class="input description" data-line="${index}" data-key="description" value="${esc(line.description)}" placeholder="Description" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="quantity" type="number" step="1" min="1" value="${line.quantity}" ${immutable ? 'disabled' : ''}><input class="input date" data-line="${index}" data-key="service_date" type="date" value="${line.service_date || ''}" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="unit_price" type="number" step="0.01" min="0" value="${(line.unit_price_cents / 100).toFixed(2)}" ${immutable ? 'disabled' : ''}><label class="tax-check"><input data-line="${index}" data-key="tax_included" type="checkbox" ${taxIncluded(line.tax_included) ? 'checked' : ''} ${immutable ? 'disabled' : ''}><span>TVA comprise</span></label><span class="line-total total">${euro(lineAmount(line))}</span>${immutable ? '<span></span>' : `<button class="remove-line" data-action="remove-line" data-index="${index}" title="Retirer">×</button>`}</div>`).join('') : '<p class="empty">Ajoutez une ligne de prestation.</p>';
   const total = e.lines.reduce((sum, l) => sum + lineAmount(l), 0);
   const archive = immutable ? `<button class="button secondary" data-action="check-archive" data-id="${e.id}">Vérifier l’archive</button><button class="button ghost" data-action="email" data-id="${e.id}">Envoyer par e-mail</button>` : '';
   const pendingEmail = !immutable ? '<button class="button ghost" disabled title="Disponible après l’archivage">Envoyer par e-mail</button>' : '';
   app.innerHTML = `<div class="editor"><header class="view-header"><div><p class="eyebrow">${immutable ? 'Document émis' : 'Brouillon'}</p><h1>Facture ${esc(e.number)}</h1><p class="subhead">${immutable ? 'Cette facture est verrouillée pour préserver l’archive.' : 'Préparez les lignes puis émettez le document une fois vérifié.'}</p></div><button class="button ghost" data-action="back-invoices">← Toutes les factures</button></header>
   <section class="invoice-top"><article class="card invoice-meta"><h2>Informations</h2><div class="form-grid"><div class="field"><label>Numéro</label><div class="invoice-number">${esc(e.number)}</div></div><div class="field"><label>Statut</label>${invoiceBadge(e)}</div><div class="field"><label>Date d’émission</label><input class="input" data-invoice="issue_date" type="date" value="${e.issue_date}" ${immutable ? 'disabled' : ''}></div><div class="field"><label>Échéance</label><input class="input" data-invoice="due_date" type="date" value="${e.due_date || ''}" ${immutable ? 'disabled' : ''}></div></div></article>
-  <article class="card invoice-client"><h2>Destinataire et lieu</h2><div class="field"><div class="field-label"><label>Client</label>${!immutable ? '<button class="link-button" data-action="new-client-from-invoice">Nouveau client</button>' : ''}</div><select class="select" data-invoice="client_id" ${immutable ? 'disabled' : ''}>${clientOptions}</select></div>${selectedClient?.email ? `<p class="helper">${esc(selectedClient.contact || selectedClient.name)} · ${esc(selectedClient.email)}</p>` : '<p class="helper">Ajoutez un e-mail au client pour permettre l’envoi.</p>'}<div class="field site-select"><div class="field-label"><label>Site / lieu de mission</label>${!immutable ? '<button class="link-button" data-action="new-site-from-invoice">Nouveau site</button>' : ''}</div><select class="select" data-invoice="site_id" ${immutable ? 'disabled' : ''}>${siteOptions}</select></div>${selectedSite ? `<p class="helper">${esc(selectedSite.address || selectedSite.label)}</p>` : ''}</article></section>
-  <section class="card line-editor"><div class="line-tools"><h2>Prestations</h2>${!immutable ? `<div class="service-picker"><div class="field-label"><label>Prestation</label><button class="link-button" data-action="new-service-from-invoice">Nouvelle prestation</button></div><select class="select" id="service-preset"><option value="">Ajouter depuis le catalogue…</option>${serviceOptions}</select></div>` : ''}</div><div class="line-grid head"><span>Description</span><span>Quantité</span><span>Date</span><span>Tarif</span><span>TVA</span><span>Total TTC</span><span></span></div>${lines}${!immutable ? '<button class="button ghost small" data-action="add-line">＋ Ajouter une ligne</button>' : ''}<p class="helper">TVA comprise : le tarif saisi est déjà TTC. Décochez pour appliquer 20 % au tarif HT.</p><div class="invoice-total"><span>Total TTC</span><strong>${euro(total)}</strong></div></section>
+  <article class="card invoice-client"><h2>Destinataire</h2><div class="field"><div class="field-label"><label>Client</label>${!immutable ? '<button class="link-button" data-action="new-client-from-invoice">Nouveau client</button>' : ''}</div><select class="select" data-invoice="client_id" ${immutable ? 'disabled' : ''}>${clientOptions}</select></div>${selectedClient?.email ? `<p class="helper">${esc(selectedClient.contact || selectedClient.name)} · ${esc(selectedClient.email)}</p>` : '<p class="helper">Ajoutez un e-mail au client pour permettre l’envoi.</p>'}</article></section>
+  <section class="card line-editor"><div class="line-tools"><h2>Prestations</h2>${!immutable ? `<div class="service-picker"><div class="field-label"><label>Prestation</label><button class="link-button" data-action="new-service-from-invoice">Nouvelle prestation</button></div><select class="select" id="service-preset"><option value="">Ajouter depuis le catalogue…</option>${serviceOptions}</select></div>` : ''}</div><div class="line-grid head"><span>Site / lieu</span><span>Description</span><span>Quantité</span><span>Date</span><span>Tarif</span><span>TVA</span><span>Total TTC</span><span></span></div>${lines}${!immutable ? '<div class="line-add-actions"><button class="button ghost small" data-action="add-line">＋ Ajouter une ligne</button><button class="button ghost small" data-action="new-site-from-invoice">⌖ Ajouter un site</button></div>' : ''}<p class="helper">TVA comprise : le tarif saisi est déjà TTC. Décochez pour appliquer 20 % au tarif HT.</p><div class="invoice-total"><span>Total TTC</span><strong>${euro(total)}</strong></div></section>
   <section class="card panel" style="margin-top:18px"><div class="field"><label>Note interne (non affichée sur le PDF)</label><textarea class="textarea" data-invoice="notes" ${immutable ? 'disabled' : ''}>${esc(e.notes || '')}</textarea></div></section>
   <div class="editor-actions"><button class="button ghost" data-action="delete-invoice" data-id="${e.id}" ${immutable ? 'disabled' : ''}>Supprimer le brouillon</button><div class="right"><button class="button ghost" data-action="pdf" data-id="${e.id}">Aperçu PDF</button>${archive}${!immutable ? `<button class="button secondary" data-action="save-invoice">Enregistrer</button><button class="button" data-action="issue-invoice" data-id="${e.id}">Archiver la facture</button>${pendingEmail}` : ''}</div></div></div>`;
 }
@@ -155,7 +155,7 @@ async function newInvoice() {
 function updateEditorFromInput(target) {
   if (target.dataset.invoice) {
     state.editor[target.dataset.invoice] = target.value;
-    if (target.dataset.invoice === 'client_id' || target.dataset.invoice === 'site_id') renderEditor();
+    if (target.dataset.invoice === 'client_id') renderEditor();
     return;
   }
   const index = Number(target.dataset.line), key = target.dataset.key; if (!Number.isInteger(index) || !key) return;
@@ -163,13 +163,14 @@ function updateEditorFromInput(target) {
   if (key === 'quantity') line.quantity = Number(target.value || 0);
   else if (key === 'unit_price') line.unit_price_cents = cents(target.value);
   else if (key === 'tax_included') line.tax_included = target.checked;
+  else if (key === 'site_id') line.site_id = target.value ? Number(target.value) : null;
   else line[key] = target.value;
   renderEditor();
 }
 
 async function saveInvoice(silent = false) {
   const e = state.editor;
-  const payload = { client_id: Number(e.client_id), site_id:e.site_id ? Number(e.site_id) : null, issue_date:e.issue_date, due_date:e.due_date, notes:e.notes, lines:e.lines };
+  const payload = { client_id: Number(e.client_id), issue_date:e.issue_date, due_date:e.due_date, notes:e.notes, lines:e.lines };
   const invoice = await api(`/api/invoices/${e.id}`, { method:'PUT', body:JSON.stringify(payload) });
   state.editor = invoice;
   if (!silent) { toast('Brouillon enregistré.'); renderEditor(); }
@@ -188,7 +189,7 @@ app.addEventListener('click', async event => {
     if (action === 'new-client-from-invoice') { location.hash = '#clients'; toast('Ajoutez le client, puis rouvrez le brouillon.'); }
     if (action === 'new-site') siteModal();
     if (action === 'edit-site') siteModal(state.sites.find(s => s.id === Number(id)));
-    if (action === 'new-site-from-invoice') { location.hash = '#sites'; toast('Ajoutez le site, puis rouvrez le brouillon.'); }
+    if (action === 'new-site-from-invoice') siteModal();
     if (action === 'new-service') serviceModal();
     if (action === 'edit-service') serviceModal(state.services.find(s => s.id === Number(id)));
     if (action === 'new-service-from-invoice') { location.hash = '#services'; toast('Ajoutez la prestation, puis rouvrez le brouillon.'); }
@@ -201,7 +202,13 @@ app.addEventListener('click', async event => {
     if (action === 'save-invoice') await saveInvoice();
     if (action === 'issue-invoice') { await saveInvoice(true); if (confirm('Archiver cette facture ? Elle sera figée. L’envoi par e-mail restera une action séparée.')) { const result = await api(`/api/invoices/${id}`, { method:'GET' }); state.editor = result; const issued = await api(`/api/invoices/${state.editor.id}/issue`, { method:'POST' }); state.editor = issued.invoice; await refresh(); renderEditor(); toast('Facture archivée et vérifiée.'); } }
     if (action === 'delete-invoice' && confirm('Supprimer ce brouillon ?')) { await api(`/api/invoices/${id}`, { method:'DELETE' }); await refresh(); location.hash = '#invoices'; toast('Brouillon supprimé.'); }
-    if (action === 'pdf') window.open(`/api/invoices/${id}/pdf`, '_blank', 'noopener');
+    if (action === 'pdf') {
+      if (state.editor?.id === Number(id) && state.editor.status === 'draft') {
+        await saveInvoice(true);
+        toast('Brouillon enregistré avant génération du PDF.');
+      }
+      window.open(`/api/invoices/${id}/pdf`, '_blank', 'noopener');
+    }
     if (action === 'check-archive') { const check = await api(`/api/invoices/${id}/archive-check`); toast(check.ok ? `Archive intègre · ${check.bytes} octets relus.` : check.reason, !check.ok); }
     if (action === 'email') { const to = prompt('Adresse e-mail du destinataire', state.editor.client?.email || ''); if (to !== null) { const result = await api(`/api/invoices/${id}/email`, { method:'POST', body:JSON.stringify({ to }) }); await refresh(); toast(`Facture envoyée à ${result.to}.`); } }
     if (action === 'locate-site') {
@@ -223,7 +230,7 @@ app.addEventListener('click', async event => {
 
 app.addEventListener('change', event => {
   if (event.target.dataset.invoice || event.target.dataset.line) updateEditorFromInput(event.target);
-  if (event.target.id === 'service-preset' && event.target.value) { const service = state.services.find(s => s.id === Number(event.target.value)); if (service) { state.editor.lines.push({ description:service.description || service.name, quantity:service.default_quantity, unit_price_cents:service.unit_price_cents, tax_included:true, service_date:today() }); renderEditor(); } }
+  if (event.target.id === 'service-preset' && event.target.value) { const service = state.services.find(s => s.id === Number(event.target.value)); if (service) { state.editor.lines.push({ description:service.description || service.name, quantity:service.default_quantity, unit_price_cents:service.unit_price_cents, tax_included:true, site_id:null, service_date:today() }); renderEditor(); } }
 });
 
 document.addEventListener('submit', async event => {
