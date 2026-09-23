@@ -131,7 +131,8 @@ async function createBackup() {
 }
 
 function requireBackupData(backup) {
-  if (!backup || backup.format !== 'facturo-backup' || backup.version !== 1 || !backup.data) throw new Error('Fichier de sauvegarde Facturo invalide.');
+  const acceptedFormats = new Set(['facturo-backup', 'facturato-backup']);
+  if (!backup || !acceptedFormats.has(backup.format) || backup.version !== 1 || !backup.data) throw new Error('Fichier de sauvegarde Facturo invalide.');
   for (const table of ['settings', 'clients', 'sites', 'services', 'invoices', 'invoice_lines', 'archive_records']) {
     if (!Array.isArray(backup.data[table])) throw new Error(`Sauvegarde invalide : table ${table} absente.`);
   }

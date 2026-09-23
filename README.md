@@ -50,15 +50,18 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - La mention micro-entreprise / « TVA non applicable, art. 293 B du CGI » est intégrée au document.
   - Après archivage, l'aperçu ne régénère pas le document : il lit le PDF archivé, source de référence de la facture émise.
 
-- **Émission et verrouillage**
-  - Le bouton « Archiver la facture » enregistre le brouillon puis déclenche l'émission et l'archivage serveur.
-  - L'émission enregistre un *snapshot* complet de la facture (émetteur, client, lignes et sites) dans la base. La facture devient figée pour préserver le document émis.
-  - Les statuts sont `draft` (brouillon), `issued` (émise/archivée) et `sent` (envoyée au client). Une échéance passée est signalée comme « à relancer ».
+- **Émission, livraison et verrouillage — politique prioritaire**
+  - Une facture reste un brouillon jusqu'à la demande d'émission. L'émission produit le PDF et fige un *snapshot* complet (émetteur, client, lignes et sites) : cette référence locale ne doit plus être modifiée.
+  - L'archivage n'est pas une finalité isolée : l'émission doit distribuer le document vers les destinations configurées, soit le stockage durable sur Raspberry Pi/serveur, l'e-mail client et, à terme, Pennylane.
+  - Chaque destination doit avoir son propre état (réussi, en attente ou en erreur), sa date de dernière tentative et son erreur éventuelle. Un échec de transfert ne doit ni supprimer le PDF ni rendre la facture à nouveau modifiable.
+  - L'utilisateur doit pouvoir relancer indépendamment le stockage serveur, l'e-mail client ou la synchronisation Pennylane, notamment après une erreur réseau ou de configuration, sans créer une seconde facture.
+  - Les statuts métier actuels sont `draft` (brouillon), `issued` (émise) et `sent` (e-mail envoyé). Une échéance passée est signalée comme « à relancer ».
+  - **État actuel du code :** le verrouillage/snapshot et l'archivage serveur sont en place ; l'e-mail est encore une action manuelle distincte et Pennylane n'est pas implémenté. Le flux synchronisé avec états et relances par destination est la prochaine évolution à construire.
   - Pour corriger une facture émise, ne pas modifier l'historique : la gestion d'avoirs est prévue dans [EVOLUTIONS.md](EVOLUTIONS.md).
 
 ## Archivage serveur et contrôle d'intégrité
 
-- L'archivage est une action distincte de l'envoi e-mail ; il peut être lancé depuis l'éditeur ou via le témoin « Serveur » de la liste des factures.
+- Dans la politique cible, le stockage serveur fait partie de l'émission/livraison. Le témoin « Serveur » reste nécessaire pour vérifier et relancer uniquement ce transfert lorsqu'il est incomplet ou en erreur.
 - Pour chaque facture émise, le serveur :
   1. génère le PDF depuis le snapshot ;
   2. calcule son empreinte SHA-256 ;
@@ -68,19 +71,19 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
 - Le bouton « Serveur » devient vert si un PDF est archivé. Il relance la lecture et le contrôle SHA-256 ; une erreur de fichier absent ou modifié est affichée dans l'interface et le tableau de bord.
 - Le répertoire est configurable avec `ARCHIVE_DIR`. Il doit être persistant, accessible en écriture par le processus Node et sauvegardé sur un second support : le contrôle d'intégrité ne remplace pas une sauvegarde.
 
-## Envoi au client
+## Envoi au client et synchronisation externe
 
-- L'e-mail est volontairement séparé de l'archivage : il ne devient disponible qu'après émission.
-- Le bouton « E-mail client » demande une adresse, préremplie avec celle du client, puis envoie le PDF archivé en pièce jointe via Nodemailer.
+- Dans la politique cible, l'e-mail client est tenté lors de l'émission si SMTP est configuré. Une relance manuelle reste disponible indépendamment du stockage serveur et, plus tard, de Pennylane.
+- Dans le code actuel, le bouton « E-mail client » est une action manuelle disponible après émission : il demande une adresse, préremplie avec celle du client, puis envoie le PDF archivé en pièce jointe via Nodemailer.
 - Configuration requise dans `.env` : `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, et, si nécessaire, `SMTP_USER`, `SMTP_PASS`, ainsi que `MAIL_FROM`.
-- Une réussite passe la facture au statut `sent`. Il n'existe pas encore de journal détaillé des envois ou de suivi de délivrabilité ; c'est listé dans [EVOLUTIONS.md](EVOLUTIONS.md).
+- Une réussite passe actuellement la facture au statut `sent`. Le journal détaillé, les états de livraison séparés et le connecteur Pennylane restent à implémenter ; ils sont listés dans [EVOLUTIONS.md](EVOLUTIONS.md).
 
 ## Données, sauvegarde et restauration
 
 - La base SQLite locale est `data/facturo.db`, en mode WAL. Elle contient réglages émetteur, séquence de numéros, clients, sites, prestations, factures, lignes et traces d'archive.
 - `data/`, `storage/`, `.env` et les exemples `doc/` sont exclus de Git : ils restent privés et ne sont pas poussés sur GitHub.
 - Dans **Paramètres → Sauvegarde portable**, « Extraire les données » télécharge un JSON unique contenant les données SQLite et les PDF archivés encodés en base64, avec leurs empreintes.
-- « Restaurer une sauvegarde » vérifie le format, la présence de tous les PDF archivés et leurs SHA-256 avant de remplacer les données actuelles. Cette opération est destructive pour l'instance cible ; elle est prévue pour une migration vers le Raspberry Pi ou la reprise après incident.
+- « Restaurer une sauvegarde » vérifie le format, la présence de tous les PDF archivés et leurs SHA-256 avant de remplacer les données actuelles. Cette opération est destructive pour l'instance cible ; elle est prévue pour une migration vers le Raspberry Pi ou la reprise après incident. Les exports v1 créés avant le renommage (`facturato-backup`) restent acceptés.
 - Le fichier d'export doit être conservé hors du Raspberry Pi. Il peut contenir données clients et PDF : ne pas le déposer dans Git ni le transmettre sans protection.
 
 ## Structure technique et points d'entrée
