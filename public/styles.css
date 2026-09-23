@@ -6,7 +6,7 @@ button { cursor:pointer; }
 .shell { min-height:100vh; display:flex; }
 .sidebar { width:245px; background:var(--navy); color:#dceaff; padding:27px 16px 20px; display:flex; flex-direction:column; position:fixed; inset:0 auto 0 0; z-index:10; }
 .brand { display:flex; align-items:center; gap:10px; color:white; font-weight:760; font-size:21px; letter-spacing:-.7px; text-decoration:none; padding:0 10px 28px; }
-.brand-mark { background:#fff; border-radius:9px; width:29px; height:29px; overflow:hidden; display:inline-grid; place-items:center; flex:0 0 auto; }
+.brand-mark { border-radius:9px; width:29px; height:29px; overflow:hidden; display:inline-grid; place-items:center; flex:0 0 auto; }
 .brand-mark img { width:118%; height:118%; max-width:none; object-fit:cover; }
 .sidebar-label { text-transform:uppercase; letter-spacing:1.2px; color:#87a9ce; font-size:10px; font-weight:700; margin:2px 12px 9px; }
 .nav { display:grid; gap:3px; }
