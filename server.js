@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import express from 'express';
 import nodemailer from 'nodemailer';
-import { db, owner, setOwner, nextNumber, row, rows, run } from './lib/database.js';
+import { db, owner, setOwner, nextNumber, advanceSequenceFromNumber, row, rows, run } from './lib/database.js';
 import { makeInvoicePdf } from './lib/pdf.js';
 
 const app = express();
@@ -100,6 +100,39 @@ async function verifyArchive(invoice) {
     const file = await fs.readFile(path.resolve(invoice.archived_path));
     return { ok: sha256(file) === invoice.archive_sha256, bytes: file.length, path: invoice.archived_path };
   } catch { return { ok: false, reason: 'Fichier absent ou illisible', path: invoice.archived_path }; }
+}
+
+async function sendInvoiceEmail(material, pdf, requestedRecipient = '') {
+  if (!process.env.SMTP_HOST || !process.env.MAIL_FROM) throw new Error('Configurez SMTP_HOST et MAIL_FROM dans .env pour activer l’envoi.');
+  const recipient = clean(requestedRecipient) || material.client.email;
+  if (!recipient) throw new Error('Aucun e-mail destinataire.');
+  const attachment = pdf || await fs.readFile(path.resolve(material.invoice.archived_path));
+  const transport = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_SECURE === 'true', auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined });
+  await transport.sendMail({ from: process.env.MAIL_FROM, to: recipient, subject: `Facture ${material.invoice.number}`, text: `Bonjour,\n\nVeuillez trouver ci-joint la facture ${material.invoice.number}.\n\nCordialement,`, attachments: [{ filename: `facture-${material.invoice.number}.pdf`, content: attachment }] });
+  return recipient;
+}
+
+async function archiveAndNotify(invoiceId) {
+  const live = liveInvoice(invoiceId);
+  if (!live) throw new Error('Facture introuvable.');
+  if (live.invoice.status === 'draft') {
+    if (!live.lines.length) throw new Error('Ajoutez au moins une prestation avant l’archivage.');
+    run("UPDATE invoices SET status='issued', snapshot=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", JSON.stringify(live), live.invoice.id);
+  }
+  const current = row('SELECT * FROM invoices WHERE id=?', live.invoice.id);
+  const archiveResult = current.archived_path ? null : await archive(live.invoice.id);
+  const material = materializedInvoice(live.invoice.id);
+  let email;
+  try {
+    const recipient = await sendInvoiceEmail(material, archiveResult?.pdf);
+    run("UPDATE invoices SET status='sent', updated_at=CURRENT_TIMESTAMP WHERE id=?", live.invoice.id);
+    email = { ok: true, to: recipient };
+  } catch (error) {
+    // La copie durable est prioritaire : un SMTP indisponible ne l’annule jamais.
+    email = { ok: false, error: error.message };
+  }
+  const archived = archiveResult ? { digest: archiveResult.digest, path: archiveResult.path, bytes: archiveResult.bytes } : await verifyArchive(current);
+  return { invoice: publicInvoice(materializedInvoice(live.invoice.id)), archive: archived, email };
 }
 
 function dueDate(issueDate) {
@@ -233,10 +266,15 @@ app.put('/api/invoices/:id', (req, res, next) => {
     if (existing.invoice.status !== 'draft') return res.status(409).json({ error: 'Une facture émise est figée. Créez un avoir ou une nouvelle facture.' });
     const b = req.body, client = clientById(b.client_id);
     if (!client) return res.status(400).json({ error: 'Sélectionnez un client.' });
+    const number = clean(b.number || existing.invoice.number);
+    if (!/^\d+$/.test(number) || Number(number) < 1) throw new Error('Le numéro de facture doit être un entier positif.');
+    const duplicate = row('SELECT id FROM invoices WHERE number=? AND id<>?', number, existing.invoice.id);
+    if (duplicate) throw new Error('Ce numéro de facture est déjà utilisé.');
     const lines = normaliseLines(b.lines);
     db.exec('BEGIN');
     try {
-      run('UPDATE invoices SET client_id=?,issue_date=?,due_date=?,notes=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', client.id, clean(b.issue_date) || today(), clean(b.due_date) || dueDate(clean(b.issue_date) || today()), clean(b.notes), invoiceTotal(lines), existing.invoice.id);
+      run('UPDATE invoices SET number=?,client_id=?,issue_date=?,due_date=?,notes=?,total_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', number, client.id, clean(b.issue_date) || today(), clean(b.due_date) || dueDate(clean(b.issue_date) || today()), clean(b.notes), invoiceTotal(lines), existing.invoice.id);
+      if (number !== existing.invoice.number) advanceSequenceFromNumber(number);
       run('DELETE FROM invoice_lines WHERE invoice_id=?', existing.invoice.id);
       for (const line of lines) run('INSERT INTO invoice_lines(invoice_id,description,quantity,unit_price_cents,tax_included,site_id,service_date,position) VALUES (?,?,?,?,?,?,?,?)', existing.invoice.id, line.description, line.quantity, line.unit_price_cents, line.tax_included ? 1 : 0, line.site_id, line.service_date, line.position);
       db.exec('COMMIT');
@@ -253,14 +291,11 @@ app.delete('/api/invoices/:id', (req, res, next) => {
 });
 app.post('/api/invoices/:id/issue', async (req, res, next) => {
   try {
-    const live = liveInvoice(req.params.id); if (!live) return res.status(404).json({ error: 'Facture introuvable.' });
-    if (live.invoice.status !== 'draft') return res.status(409).json({ error: 'Cette facture a déjà été émise.' });
-    if (!live.lines.length) return res.status(400).json({ error: 'Ajoutez au moins une prestation avant l’émission.' });
-    const snapshot = JSON.stringify(live);
-    run("UPDATE invoices SET status='issued', snapshot=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", snapshot, live.invoice.id);
-    const archiveResult = await archive(live.invoice.id);
-    res.json({ invoice: publicInvoice(materializedInvoice(live.invoice.id)), archive: archiveResult });
+    res.json(await archiveAndNotify(req.params.id));
   } catch (error) { next(error); }
+});
+app.post('/api/invoices/:id/archive', async (req, res, next) => {
+  try { res.json(await archiveAndNotify(req.params.id)); } catch (error) { next(error); }
 });
 app.get('/api/invoices/:id/pdf', async (req, res, next) => {
   try {
@@ -281,12 +316,7 @@ app.post('/api/invoices/:id/email', async (req, res, next) => {
   try {
     const material = materializedInvoice(req.params.id); if (!material) return res.status(404).json({ error: 'Facture introuvable.' });
     if (material.invoice.status === 'draft') return res.status(409).json({ error: 'Émettez la facture avant de l’envoyer.' });
-    if (!process.env.SMTP_HOST || !process.env.MAIL_FROM) return res.status(503).json({ error: 'Configurez SMTP_HOST et MAIL_FROM dans .env pour activer l’envoi.' });
-    const recipient = clean(req.body.to) || material.client.email;
-    if (!recipient) return res.status(400).json({ error: 'Aucun e-mail destinataire.' });
-    const pdf = await fs.readFile(path.resolve(material.invoice.archived_path));
-    const transport = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_SECURE === 'true', auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined });
-    await transport.sendMail({ from: process.env.MAIL_FROM, to: recipient, subject: `Facture ${material.invoice.number}`, text: `Bonjour,\n\nVeuillez trouver ci-joint la facture ${material.invoice.number}.\n\nCordialement,`, attachments: [{ filename: `facture-${material.invoice.number}.pdf`, content: pdf }] });
+    const recipient = await sendInvoiceEmail(material, null, req.body.to);
     run("UPDATE invoices SET status='sent', updated_at=CURRENT_TIMESTAMP WHERE id=?", material.invoice.id);
     res.json({ ok: true, to: recipient });
   } catch (error) { next(error); }
