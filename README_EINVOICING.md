@@ -28,3 +28,19 @@ Pour réduire la dépendance à un éditeur de SaaS, une architecture auto-hébe
 - Commencer par une intégration sandbox et un test de connexion sans création de facture distante.
 - Ne sélectionner une destination de production qu'après validation des formats, des conditions tarifaires, de la compatibilité du client et des obligations applicables à l'activité.
 - Prévoir la possibilité de remplacer une destination sans modifier les factures locales déjà émises.
+
+## 3. Première connexion SUPER PDP
+
+Facturo peut utiliser le flux OAuth2 `client_credentials` pour une seule entreprise gérée par l'instance locale. Après création d'une application API dans SUPER PDP, renseigner uniquement sur le serveur les variables suivantes dans `.env` :
+
+```dotenv
+SUPER_PDP_CLIENT_ID=...
+SUPER_PDP_CLIENT_SECRET=...
+```
+
+Les secrets ne doivent jamais être ajoutés à Git. Une fois le service redémarré, les contrôles techniques disponibles sont :
+
+- `POST /api/einvoicing/super-pdp/test-connection` : vérifie le jeton OAuth et le statut KYB de l'entreprise (le statut KYC utilisateur est absent avec le flux `client_credentials`) ;
+- `GET /api/einvoicing/super-pdp/recipients/:siren` : interroge l'adresse électronique de facturation d'un destinataire dans l'annuaire.
+
+Cette première étape ne transmet aucune facture. Le générateur de document structuré et le journal de transmission seront ajoutés avant tout envoi réel.

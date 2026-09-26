@@ -6,9 +6,12 @@ import express from 'express';
 import nodemailer from 'nodemailer';
 import { db, owner, setOwner, nextNumber, advanceSequenceFromNumber, row, rows, run } from './lib/database.js';
 import { makeInvoicePdf } from './lib/pdf.js';
+import { superPdpConfigured, superPdpRecipient, superPdpSession } from './lib/super-pdp.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3030);
+const host = String(process.env.HOST || '127.0.0.1');
+const readOnly = process.env.FACTURO_READ_ONLY === 'true';
 const archiveDir = path.resolve(process.env.ARCHIVE_DIR || './storage/archive');
 const today = () => new Date().toISOString().slice(0, 10);
 const sha256 = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
@@ -16,6 +19,14 @@ const cents = value => Math.round(Number(value || 0) * 100);
 const clean = value => String(value ?? '').trim();
 const optionalNumber = value => clean(value) === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const taxIncluded = value => ![false, 0, '0', 'false'].includes(value);
+
+// Defense in depth: the public Nginx gateway only allows GET and HEAD, and
+// this guard keeps the data immutable even when Facturo is reached through an
+// SSH tunnel. Set FACTURO_READ_ONLY=false only for a deliberate maintenance.
+app.use((req, res, next) => {
+  if (readOnly && !['GET', 'HEAD'].includes(req.method)) return res.status(405).json({ error: 'Cette instance Facturo est en lecture seule.' });
+  next();
+});
 
 app.use(express.json({ limit: '25mb' }));
 app.use(express.static('public'));
@@ -221,6 +232,25 @@ app.get('/api/dashboard', async (_req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/einvoicing/super-pdp/configuration', (_req, res) => {
+  res.json({ configured: superPdpConfigured(), api_base_url: process.env.SUPER_PDP_API_BASE_URL || 'https://api.superpdp.tech/v1.beta' });
+});
+
+app.post('/api/einvoicing/super-pdp/test-connection', async (_req, res, next) => {
+  try {
+    const session = await superPdpSession();
+    // A client-credentials token represents the application and company, not an
+    // interactive user. SUPER PDP therefore omits user_identity_verification_status
+    // for this flow while the company verification remains authoritative.
+    const userVerified = !session.user_identity_verification_status || session.user_identity_verification_status === 'verified';
+    res.json({ ok: session.company_verification_status === 'verified' && userVerified, session });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/einvoicing/super-pdp/recipients/:siren', async (req, res, next) => {
+  try { res.json(await superPdpRecipient(req.params.siren)); } catch (error) { next(error); }
+});
+
 app.get('/api/backup/export', async (_req, res, next) => {
   try {
     const backup = await createBackup();
@@ -407,4 +437,4 @@ app.use((error, _req, res, _next) => {
   res.status(400).json({ error: error.message || 'Une erreur est survenue.' });
 });
 
-app.listen(port, () => console.log(`Facturo prêt sur http://localhost:${port}`));
+app.listen(port, host, () => console.log(`Facturo prêt sur http://${host}:${port}${readOnly ? ' (lecture seule)' : ''}`));

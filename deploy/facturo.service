@@ -1,0 +1,17 @@
+[Unit]
+Description=Facturo invoice web application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=donald
+Group=donald
+WorkingDirectory=/home/donald/Informatique/C++/facturo
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /home/donald/Informatique/C++/facturo/server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

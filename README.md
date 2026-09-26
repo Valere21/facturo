@@ -100,8 +100,52 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - `POST /api/invoices/:id/archive`, `GET /api/invoices/:id/archive-check`, `GET /api/invoices/:id/pdf`, `POST /api/invoices/:id/email` ;
   - `GET /api/backup/export` et `POST /api/backup/import`.
 
+## Accès distant HTTPS en lecture seule
+
+### Instance Raspberry Pi actuelle
+
+Facturo s'exécute sous le compte système dédié `donald`, via le service `facturo.service`. Node écoute uniquement sur l'interface de bouclage :
+
+```dotenv
+HOST=127.0.0.1
+PORT=3030
+FACTURO_READ_ONLY=true
+```
+
+Ne pas exposer directement le port Node (`3030`) sur Internet. Avec cette configuration, toute requête `POST`, `PUT` ou `DELETE` est refusée par l'application, y compris depuis un tunnel SSH.
+
+Le point d'entrée externe est `https://donald-pomme.duckdns.org:8443/`. Il réutilise seulement le certificat TLS Let's Encrypt existant du serveur Pomme : les fichiers et les routes Pomme (`/pomme/`, `/pomme-health`) restent indépendants de Facturo. La box ne doit rediriger que `TCP 8443` vers `192.168.1.99:8443`; la redirection publique de `3030` doit rester absente.
+
+Le virtual host Nginx installé est décrit dans `deploy/nginx/pomme-facturo.conf`. Il transmet la racine vers `127.0.0.1:3030` et conserve les locations Pomme plus spécifiques. La configuration est validée puis chargée avec :
+
+```bash
+sudo /usr/sbin/nginx -t && sudo systemctl reload nginx
+```
+
+### Contrôles d'accès
+
+Le reverse proxy HTTPS applique une authentification HTTP Basic dédiée (`facturo`, fichier `/etc/nginx/.htpasswd-facturo`) et n'autorise que `GET` et `HEAD`. Ce compte n'est pas un compte Linux. Le navigateur conserve l'authentification pour la session ; éviter de l'enregistrer sur un poste partagé.
+
+Le proxy refuse toute écriture avant d'atteindre Node, puis `FACTURO_READ_ONLY` impose la même interdiction dans l'application : ce sont deux barrières indépendantes. Le fragment correspondant est `deploy/nginx/facturo-readonly-location.conf` et ajoute aussi `nosniff`, `X-Frame-Options: DENY` et une politique de référent. Le jail `deploy/fail2ban/facturo-nginx-auth.conf` bannit pendant une heure une adresse ayant échoué cinq authentifications en dix minutes. Son état se contrôle avec :
+
+```bash
+sudo fail2ban-client status facturo-nginx-auth
+```
+
+Les secrets Super PDP et SMTP restent dans `.env` (mode `600`), tandis que `data/` et `storage/` sont en mode `700`. Ils ne sont jamais versionnés.
+
+### Maintenance d'écriture exceptionnelle
+
+L'interface publique reste strictement consultative, même si `FACTURO_READ_ONLY` est passé à `false`, car Nginx bloque toujours les verbes d'écriture. Pour une maintenance volontaire, utiliser un tunnel SSH depuis un poste de confiance :
+
+```bash
+ssh -N -p 9608 -L 8080:127.0.0.1:3030 donald@86.69.216.187
+```
+
+Sur le Pi, passer temporairement `FACTURO_READ_ONLY=false` dans `~/Informatique/C++/facturo/.env`, puis redémarrer le service avec `sudo systemctl restart facturo`. L'interface sera alors disponible à `http://127.0.0.1:8080` à travers le tunnel. Remettre impérativement `FACTURO_READ_ONLY=true` et redémarrer le service après la maintenance.
+
 ## Exploitation et limites actuelles
 
-- L'application ne met pas en place d'authentification ni de gestion multi-utilisateur. Ne pas l'exposer directement sur Internet ; l'utiliser derrière un réseau privé, un VPN ou un reverse proxy correctement protégé.
+- L'application ne fournit pas de gestion multi-utilisateur native. Ne pas l'exposer directement sur Internet ; l'utiliser derrière un réseau privé, un VPN ou un reverse proxy HTTPS correctement protégé.
 - Ne jamais considérer une facture émise comme modifiable : l'archivage protège le document mais n'est pas, à lui seul, un dispositif légal complet de conservation ou de facturation électronique.
 - Les pistes fonctionnelles prévues (avoirs, relances, second support, Pennylane et Google Agenda) sont centralisées dans [EVOLUTIONS.md](EVOLUTIONS.md).
