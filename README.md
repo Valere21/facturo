@@ -40,6 +40,7 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - La création exige au moins un client. Un numéro est généré depuis la séquence locale, avec une échéance par défaut à 60 jours.
   - Le numéro est éditable tant que la facture est un brouillon. Après une modification manuelle, le prochain numéro suit le dernier numéro saisi ; les doublons sont refusés.
   - Le brouillon contient le client, dates d'émission/échéance, note interne non imprimée et une ou plusieurs lignes : site, description, heures, date, tarif horaire et TVA.
+  - Dans l'éditeur classique, la colonne du prix affiche « Tarif horaire » ; le PDF affiche « Taux horaire ».
   - Une ligne affiche « comprise » lorsque la TVA est incluse. Si la case est décochée, elle affiche « + 20% » et le total applique `tarif × 1,20`.
   - L'aperçu PDF enregistre d'abord silencieusement le brouillon, afin que le PDF corresponde aux dernières modifications.
   - Seuls les brouillons peuvent être modifiés ou supprimés. La suppression est accessible depuis la liste et l'éditeur.
@@ -83,7 +84,10 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
 
 ## Données, sauvegarde et restauration
 
-- La base SQLite locale est `data/facturo.db`, en mode WAL. Elle contient réglages émetteur, séquence de numéros, clients, sites, prestations, factures, lignes et traces d'archive.
+- La base SQLite locale est `data/facturo.db` en développement, ou le chemin défini par `DATA_DIR` en production. Elle est en mode WAL et contient réglages émetteur, séquence de numéros, clients, sites, prestations, factures, lignes et traces d'archive.
+- Chaque brouillon est enregistré dans `invoices` et `invoice_lines` par les routes de création/mise à jour ; il reste disponible dans la liste tant qu'il n'est pas supprimé. L'émission fige son *snapshot*, écrit le PDF dans `ARCHIVE_DIR`, calcule son SHA-256 et ajoute une ligne dans `archive_records`.
+- L'historique est propre à une instance et à son `DATA_DIR`/`ARCHIVE_DIR`. Un re-clone sur le même hôte conserve donc les brouillons et archives externes ; un clone sur une nouvelle machine démarre avec une base vide. Le dépôt Git ne contient volontairement aucun historique métier.
+- Pour transmettre l'historique à une nouvelle machine, utiliser **Paramètres → Sauvegarde portable** puis **Restaurer une sauvegarde**. Le JSON transporte les tables SQLite et les PDF archivés ; une copie brute de la base et de `ARCHIVE_DIR` est également possible après arrêt du service, avec les mêmes chemins configurés.
 - `data/`, `storage/`, `.env` et les exemples `doc/` sont exclus de Git : ils restent privés et ne sont pas poussés sur GitHub.
 - Dans **Paramètres → Sauvegarde portable**, « Extraire les données » télécharge un JSON unique contenant les données SQLite et les PDF archivés encodés en base64, avec leurs empreintes.
 - « Restaurer une sauvegarde » vérifie le format, la présence de tous les PDF archivés et leurs SHA-256 avant de remplacer les données actuelles. Cette opération est destructive pour l'instance cible ; elle est prévue pour une migration vers le Raspberry Pi ou la reprise après incident. Les exports v1 créés avant le renommage (`facturato-backup`) restent acceptés.
