@@ -102,49 +102,120 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - `POST /api/invoices/:id/archive`, `GET /api/invoices/:id/archive-check`, `GET /api/invoices/:id/pdf`, `POST /api/invoices/:id/email` ;
   - `GET /api/backup/export` et `POST /api/backup/import`.
 
-## Accès distant HTTPS en lecture seule
+## Infrastructure Raspberry Pi et accès distant
 
-### Instance Raspberry Pi actuelle
+### Déploiement réel sur `donald`
 
-Facturo s'exécute sous le compte système dédié `donald`, via le service `facturo.service`. Node écoute uniquement sur l'interface de bouclage :
+Facturo s'exécute sous le compte système `donald`, depuis le dépôt :
+
+```text
+/home/donald/Informatique/C++/facturo
+```
+
+Le service systemd est `/etc/systemd/system/facturo.service`. Il utilise `User=donald`, `WorkingDirectory=/home/donald/Informatique/C++/facturo` et lance `/usr/bin/node .../server.js`. Les journaux se consultent avec `journalctl -u facturo.service`.
+
+Le serveur Node écoute uniquement sur `127.0.0.1:3030`. La configuration actuellement active sur le Pi est :
 
 ```dotenv
-HOST=127.0.0.1
 PORT=3030
-FACTURO_READ_ONLY=true
+HOST=127.0.0.1
+FACTURO_READ_ONLY=false
+ARCHIVE_DIR=/home/donald/Informatique/C++/facturo/storage/archive
+SIGNATURE_PATH=./storage/signature.png
 ```
 
-Ne pas exposer directement le port Node (`3030`) sur Internet. Avec cette configuration, toute requête `POST`, `PUT` ou `DELETE` est refusée par l'application, y compris depuis un tunnel SSH.
+`FACTURO_READ_ONLY=false` permet les requêtes normales depuis le Pi ou un tunnel SSH. Le port Node ne doit jamais être redirigé directement depuis Internet.
 
-Le point d'entrée externe est `https://donald-pomme.duckdns.org:8443/`. Il réutilise seulement le certificat TLS Let's Encrypt existant du serveur Pomme : les fichiers et les routes Pomme (`/pomme/`, `/pomme-health`) restent indépendants de Facturo. La box ne doit rediriger que `TCP 8443` vers `192.168.1.99:8443`; la redirection publique de `3030` doit rester absente.
+### Données et fichiers privés du Pi
 
-Le virtual host Nginx installé est décrit dans `deploy/nginx/pomme-facturo.conf`. Il transmet la racine vers `127.0.0.1:3030` et conserve les locations Pomme plus spécifiques. La configuration est validée puis chargée avec :
-
-```bash
-sudo /usr/sbin/nginx -t && sudo systemctl reload nginx
+```text
+/home/donald/Informatique/C++/facturo/.env
+/home/donald/Informatique/C++/facturo/data/facturo.db
+/home/donald/Informatique/C++/facturo/data/facturo.db-wal
+/home/donald/Informatique/C++/facturo/data/facturo.db-shm
+/home/donald/Informatique/C++/facturo/storage/archive/
+/home/donald/Informatique/C++/facturo/storage/signature.png
 ```
 
-### Contrôles d'accès
+La base est SQLite en mode WAL. Elle contient les tables `settings`, `clients`, `sites`, `services`, `invoices`, `invoice_lines` et `archive_records`. `data/`, `storage/` et `.env` sont exclus de Git : un re-clone du dépôt ne les restaure pas automatiquement.
 
-Le reverse proxy HTTPS applique une authentification HTTP Basic dédiée (`facturo`, fichier `/etc/nginx/.htpasswd-facturo`) et n'autorise que `GET` et `HEAD`. Ce compte n'est pas un compte Linux. Le navigateur conserve l'authentification pour la session ; éviter de l'enregistrer sur un poste partagé.
+### HTTPS, certificat et authentification
 
-Le proxy refuse toute écriture avant d'atteindre Node, puis `FACTURO_READ_ONLY` impose la même interdiction dans l'application : ce sont deux barrières indépendantes. Le fragment correspondant est `deploy/nginx/facturo-readonly-location.conf` et ajoute aussi `nosniff`, `X-Frame-Options: DENY` et une politique de référent. Le jail `deploy/fail2ban/facturo-nginx-auth.conf` bannit pendant une heure une adresse ayant échoué cinq authentifications en dix minutes. Son état se contrôle avec :
+L'accès externe est :
+
+```text
+https://donald-pomme.duckdns.org:8443/
+```
+
+Le routeur redirige le TCP public `8443` vers `192.168.1.99:8443`. Le reverse proxy est défini dans :
+
+```text
+/etc/nginx/sites-available/pomme
+/etc/nginx/sites-enabled/pomme   (lien vers le fichier précédent)
+/etc/nginx/snippets/facturo-readonly-location.conf
+```
+
+Le certificat Let's Encrypt utilisé par Nginx est :
+
+```text
+/etc/letsencrypt/live/donald-pomme.duckdns.org/fullchain.pem
+/etc/letsencrypt/live/donald-pomme.duckdns.org/privkey.pem
+```
+
+L'authentification HTTP Basic Facturo utilise `/etc/nginx/.htpasswd-facturo`. Le compte est distinct d'un compte Linux. Le proxy autorise actuellement seulement `GET` et `HEAD` (`403` pour une écriture publique), même si l'application Node est en mode normal pour l'administration par SSH.
+
+Fail2ban utilise :
+
+```text
+/etc/fail2ban/jail.d/facturo-nginx-auth.conf
+/etc/fail2ban/filter.d/nginx-http-auth.conf
+```
+
+État du jail :
 
 ```bash
 sudo fail2ban-client status facturo-nginx-auth
 ```
 
-Les secrets Super PDP et SMTP restent dans `.env` (mode `600`), tandis que `data/` et `storage/` sont en mode `700`. Ils ne sont jamais versionnés.
+Les logs Nginx sont `/var/log/nginx/access.log` et `/var/log/nginx/error.log`. La configuration se valide avec `sudo /usr/sbin/nginx -t` avant un `sudo systemctl reload nginx`.
 
-### Maintenance d'écriture exceptionnelle
+### Accès d'administration par SSH
 
-L'interface publique reste strictement consultative, même si `FACTURO_READ_ONLY` est passé à `false`, car Nginx bloque toujours les verbes d'écriture. Pour une maintenance volontaire, utiliser un tunnel SSH depuis un poste de confiance :
+Le port SSH public utilisé par l'alias `donald` est `9608`. Pour utiliser normalement les requêtes `GET`, `POST`, `PUT` et `DELETE` depuis un autre réseau :
 
 ```bash
 ssh -N -p 9608 -L 8080:127.0.0.1:3030 donald@86.69.216.187
 ```
 
-Sur le Pi, passer temporairement `FACTURO_READ_ONLY=false` dans `~/Informatique/C++/facturo/.env`, puis redémarrer le service avec `sudo systemctl restart facturo`. L'interface sera alors disponible à `http://127.0.0.1:8080` à travers le tunnel. Remettre impérativement `FACTURO_READ_ONLY=true` et redémarrer le service après la maintenance.
+Puis ouvrir `http://127.0.0.1:8080/`. Ce tunnel atteint directement Node et contourne le filtrage Nginx public ; il ne crée pas de session Linux interactive.
+
+### Re-cloner le dépôt sans perdre les données
+
+Le dépôt et les données vivent actuellement dans le même dossier. **Ne pas supprimer `/home/donald/Informatique/C++/facturo` avant d'avoir sauvegardé `data/`, `storage/` et `.env`.** Exemple avant le re-clone :
+
+```bash
+cd /home/donald/Informatique/C++/facturo
+cp -a data ../facturo-data-backup
+cp -a storage ../facturo-storage-backup
+cp -a .env ../facturo.env.backup
+```
+
+Après le `rm -rf` manuel puis le clone :
+
+```bash
+cd /home/donald/Informatique/C++
+git clone git@github.com:Valere21/facturo.git
+cd facturo
+npm ci
+cp -a ../facturo-data-backup data
+cp -a ../facturo-storage-backup storage
+cp -a ../facturo.env.backup .env
+chmod 600 .env storage/signature.png
+chmod 700 data storage storage/archive
+sudo systemctl restart facturo
+```
+
+Les fichiers `/etc/systemd/system/facturo.service`, `/etc/nginx/...`, `/etc/letsencrypt/...`, `/etc/fail2ban/...` et `/etc/nginx/.htpasswd-facturo` sont hors du dépôt : le re-clone ne les supprime pas. Après redémarrage, contrôler `systemctl status facturo`, `curl http://127.0.0.1:3030/api/dashboard` et le point d'entrée HTTPS.
 
 ## Exploitation et limites actuelles
 
