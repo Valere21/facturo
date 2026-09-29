@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { invoiceFooterFits, invoiceLineDescription, invoiceRowHeight, invoiceRowNeedsPageBreak, totalEuros } from '../lib/pdf.js';
+import { invoiceFooterFits, invoiceLineDescription, invoiceRowHeight, paginateInvoiceRows, totalEuros } from '../lib/pdf.js';
 
 test('a long invoice description is preserved without ellipsis', () => {
   const description = 'Intervention de maintenance complète avec remplacement des composants usés et vérification approfondie.';
@@ -13,10 +13,15 @@ test('a wrapped description reserves enough vertical space', () => {
   assert.equal(invoiceRowHeight(36), 40);
 });
 
-test('page breaks follow measured row height and footer space', () => {
-  assert.equal(invoiceFooterFits(584), true);
-  assert.equal(invoiceRowNeedsPageBreak(552, 32), false);
-  assert.equal(invoiceRowNeedsPageBreak(584, 32), true);
+test('pagination fills the page body before reserving the footer', () => {
+  const referenceRows = [32, 18, 32, 18, 18, 18, 32, 32, 32, 18, 18, 32, 32];
+  const pages = paginateInvoiceRows(referenceRows);
+
+  assert.equal(pages.length, 2);
+  assert.equal(pages[0].rows.length, 12);
+  assert.equal(pages[1].rows.length, 1);
+  assert.equal(invoiceFooterFits(pages[1].endY), true);
+  assert.equal(pages[0].endY > 596, true);
 });
 
 test('the invoice total uses a plain space and omits unnecessary cents', () => {

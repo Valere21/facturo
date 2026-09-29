@@ -48,7 +48,7 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - Généré côté serveur avec PDFKit à partir de `lib/pdf.js`, selon la mise en page inspirée des exemples du dossier `doc/`.
   - Contient les coordonnées de l'émetteur, du client, le numéro, dates, lignes, total TTC, informations bancaires et conditions de paiement.
   - Les descriptions longues retournent à la ligne sans troncature ; la hauteur de chaque ligne est calculée pour préserver l'espacement.
-  - La pagination PDF se base sur la hauteur réelle des lignes et l'espace nécessaire au pied de page ; elle ne dépend pas d'un numéro de ligne fixe.
+  - La pagination PDF se base sur la hauteur réelle des lignes : les pages intermédiaires utilisent l'espace disponible et le pied de page est réservé uniquement sur la dernière page.
   - La signature PNG définie par `SIGNATURE_PATH` est placée sous la mention « Signature ». Sur le Pi, elle est stockée hors Git dans `/home/donald/.local/share/facturo/signature.png`.
   - La mention micro-entreprise / « TVA non applicable, art. 293 B du CGI » est intégrée au document.
   - Après archivage, l'aperçu ne régénère pas le document : il lit le PDF archivé, source de référence de la facture émise.
