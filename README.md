@@ -48,7 +48,7 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - Généré côté serveur avec PDFKit à partir de `lib/pdf.js`, selon la mise en page inspirée des exemples du dossier `doc/`.
   - Contient les coordonnées de l'émetteur, du client, le numéro, dates, lignes, total TTC, informations bancaires et conditions de paiement.
   - Les descriptions longues retournent à la ligne sans troncature ; la hauteur de chaque ligne est calculée pour préserver l'espacement.
-  - La signature PNG définie par `SIGNATURE_PATH` est placée sous la mention « Signature ». Sur le Pi, elle est stockée hors Git dans `storage/signature.png`.
+  - La signature PNG définie par `SIGNATURE_PATH` est placée sous la mention « Signature ». Sur le Pi, elle est stockée hors Git dans `/home/donald/.local/share/facturo/signature.png`.
   - La mention micro-entreprise / « TVA non applicable, art. 293 B du CGI » est intégrée au document.
   - Après archivage, l'aperçu ne régénère pas le document : il lit le PDF archivé, source de référence de la facture émise.
 
@@ -112,7 +112,7 @@ Facturo s'exécute sous le compte système `donald`, depuis le dépôt :
 /home/donald/Informatique/C++/facturo
 ```
 
-Le service systemd est `/etc/systemd/system/facturo.service`. Il utilise `User=donald`, `WorkingDirectory=/home/donald/Informatique/C++/facturo` et lance `/usr/bin/node .../server.js`. Les journaux se consultent avec `journalctl -u facturo.service`.
+Le service systemd est `/etc/systemd/system/facturo.service`. Il utilise `User=donald`, `WorkingDirectory=/home/donald/Informatique/C++/facturo`, charge `/home/donald/.config/facturo/facturo.env` et lance `/usr/bin/node .../server.js`. Les journaux se consultent avec `journalctl -u facturo.service`.
 
 Le serveur Node écoute uniquement sur `127.0.0.1:3030`. La configuration actuellement active sur le Pi est :
 
@@ -120,8 +120,9 @@ Le serveur Node écoute uniquement sur `127.0.0.1:3030`. La configuration actuel
 PORT=3030
 HOST=127.0.0.1
 FACTURO_READ_ONLY=false
-ARCHIVE_DIR=/home/donald/Informatique/C++/facturo/storage/archive
-SIGNATURE_PATH=./storage/signature.png
+DATA_DIR=/home/donald/.local/share/facturo
+ARCHIVE_DIR=/home/donald/.local/share/facturo/archive
+SIGNATURE_PATH=/home/donald/.local/share/facturo/signature.png
 ```
 
 `FACTURO_READ_ONLY=false` permet les requêtes normales depuis le Pi ou un tunnel SSH. Le port Node ne doit jamais être redirigé directement depuis Internet.
@@ -129,15 +130,15 @@ SIGNATURE_PATH=./storage/signature.png
 ### Données et fichiers privés du Pi
 
 ```text
-/home/donald/Informatique/C++/facturo/.env
-/home/donald/Informatique/C++/facturo/data/facturo.db
-/home/donald/Informatique/C++/facturo/data/facturo.db-wal
-/home/donald/Informatique/C++/facturo/data/facturo.db-shm
-/home/donald/Informatique/C++/facturo/storage/archive/
-/home/donald/Informatique/C++/facturo/storage/signature.png
+/home/donald/.config/facturo/facturo.env
+/home/donald/.local/share/facturo/facturo.db
+/home/donald/.local/share/facturo/facturo.db-wal
+/home/donald/.local/share/facturo/facturo.db-shm
+/home/donald/.local/share/facturo/archive/
+/home/donald/.local/share/facturo/signature.png
 ```
 
-La base est SQLite en mode WAL. Elle contient les tables `settings`, `clients`, `sites`, `services`, `invoices`, `invoice_lines` et `archive_records`. `data/`, `storage/` et `.env` sont exclus de Git : un re-clone du dépôt ne les restaure pas automatiquement.
+La base est SQLite en mode WAL. Elle contient les tables `settings`, `clients`, `sites`, `services`, `invoices`, `invoice_lines` et `archive_records`. Ces chemins sont hors du dépôt : un re-clone du code ne touche donc ni la base, ni les archives, ni la signature, ni les secrets.
 
 ### HTTPS, certificat et authentification
 
@@ -189,16 +190,9 @@ ssh -N -p 9608 -L 8080:127.0.0.1:3030 donald@86.69.216.187
 
 Puis ouvrir `http://127.0.0.1:8080/`. Ce tunnel atteint directement Node et contourne le filtrage Nginx public ; il ne crée pas de session Linux interactive.
 
-### Re-cloner le dépôt sans perdre les données
+### Re-cloner le dépôt sans toucher aux données
 
-Le dépôt et les données vivent actuellement dans le même dossier. **Ne pas supprimer `/home/donald/Informatique/C++/facturo` avant d'avoir sauvegardé `data/`, `storage/` et `.env`.** Exemple avant le re-clone :
-
-```bash
-cd /home/donald/Informatique/C++/facturo
-cp -a data ../facturo-data-backup
-cp -a storage ../facturo-storage-backup
-cp -a .env ../facturo.env.backup
-```
+Après migration, le dépôt peut être supprimé et re-cloné sans sauvegarde préalable : les données, la signature et la configuration sont hors de `/home/donald/Informatique/C++/facturo`. Ne pas supprimer `/home/donald/.config/facturo` ni `/home/donald/.local/share/facturo`.
 
 Après le `rm -rf` manuel puis le clone :
 
@@ -207,13 +201,19 @@ cd /home/donald/Informatique/C++
 git clone git@github.com:Valere21/facturo.git
 cd facturo
 npm ci
-cp -a ../facturo-data-backup data
-cp -a ../facturo-storage-backup storage
-cp -a ../facturo.env.backup .env
-chmod 600 .env storage/signature.png
-chmod 700 data storage storage/archive
+```
+
+Le fichier `/home/donald/.config/facturo/facturo.env` doit conserver les chemins et secrets suivants : `DATA_DIR`, `ARCHIVE_DIR`, `SIGNATURE_PATH`, SMTP/SUPER PDP et `FACTURO_READ_ONLY`. La signature est déjà dans `/home/donald/.local/share/facturo/signature.png` ; il n'est pas nécessaire de la recopier après chaque clone.
+
+Installer ensuite l'unité systemd versionnée (une seule fois après cette migration) :
+
+```bash
+sudo install -o root -g root -m 0644 deploy/facturo.service /etc/systemd/system/facturo.service
+sudo systemctl daemon-reload
 sudo systemctl restart facturo
 ```
+
+Pour une installation neuve, créer avant le premier démarrage les répertoires `/home/donald/.config/facturo` et `/home/donald/.local/share/facturo/archive`, copier `.env.example` vers `/home/donald/.config/facturo/facturo.env`, puis adapter ses chemins et secrets. Pour restaurer une sauvegarde JSON, utiliser **Paramètres → Restaurer une sauvegarde** une fois Facturo démarré.
 
 Les fichiers `/etc/systemd/system/facturo.service`, `/etc/nginx/...`, `/etc/letsencrypt/...`, `/etc/fail2ban/...` et `/etc/nginx/.htpasswd-facturo` sont hors du dépôt : le re-clone ne les supprime pas. Après redémarrage, contrôler `systemctl status facturo`, `curl http://127.0.0.1:3030/api/dashboard` et le point d'entrée HTTPS.
 

@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './lib/config.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -99,7 +99,7 @@ async function archive(invoiceId) {
   await fs.rename(temporary, target);
   const readBack = await fs.readFile(target);
   if (sha256(readBack) !== digest || readBack.length !== pdf.length) throw new Error('Échec de la vérification après archivage.');
-  const relative = path.relative(process.cwd(), target);
+  const relative = archiveRelativePath(target);
   run('UPDATE invoices SET archived_path=?, archive_sha256=?, verified_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', relative, digest, new Date().toISOString(), invoiceId);
   run('INSERT INTO archive_records(invoice_id,path,sha256,bytes,verified_at) VALUES (?,?,?,?,?)', invoiceId, relative, digest, pdf.length, new Date().toISOString());
   return { pdf, digest, path: relative, bytes: pdf.length };
@@ -108,16 +108,31 @@ async function archive(invoiceId) {
 async function verifyArchive(invoice) {
   if (!invoice.archived_path || !invoice.archive_sha256) return { ok: false, reason: 'Aucun PDF archivé' };
   try {
-    const file = await fs.readFile(path.resolve(invoice.archived_path));
+    const file = await fs.readFile(archiveFilePath(invoice.archived_path));
     return { ok: sha256(file) === invoice.archive_sha256, bytes: file.length, path: invoice.archived_path };
   } catch { return { ok: false, reason: 'Fichier absent ou illisible', path: invoice.archived_path }; }
 }
 
-function archiveFilePath(relativePath) {
+function archiveRelativePath(archivePath) {
   const root = path.resolve(archiveDir);
-  const file = path.resolve(relativePath || '');
-  if (!relativePath || (file !== root && !file.startsWith(`${root}${path.sep}`))) throw new Error('Chemin d’archive invalide dans la sauvegarde.');
-  return file;
+  const raw = String(archivePath || '').replaceAll('\\', '/');
+  if (!raw) throw new Error('Chemin d’archive invalide dans la sauvegarde.');
+  const legacyPrefix = 'storage/archive/';
+  let file;
+  if (path.isAbsolute(raw)) {
+    file = path.resolve(raw);
+    const oldRoot = path.resolve('storage/archive');
+    if (file.startsWith(`${oldRoot}${path.sep}`)) file = path.resolve(root, path.relative(oldRoot, file));
+  } else {
+    const relative = raw === 'storage/archive' ? '' : raw.startsWith(legacyPrefix) ? raw.slice(legacyPrefix.length) : raw;
+    file = path.resolve(root, relative);
+  }
+  if (file === root || !file.startsWith(`${root}${path.sep}`)) throw new Error('Chemin d’archive invalide dans la sauvegarde.');
+  return path.relative(root, file).split(path.sep).join('/');
+}
+
+function archiveFilePath(archivePath) {
+  return path.resolve(archiveDir, archiveRelativePath(archivePath));
 }
 
 async function createBackup() {
@@ -156,10 +171,11 @@ function insertRows(table, fields, values) {
 
 async function restoreBackup(backup) {
   requireBackupData(backup);
-  const invoiceById = new Map(backup.data.invoices.map(invoice => [Number(invoice.id), invoice]));
+  const invoices = backup.data.invoices.map(invoice => ({ ...invoice, archived_path: invoice.archived_path ? archiveRelativePath(invoice.archived_path) : null }));
+  const archiveRecords = backup.data.archive_records.map(record => ({ ...record, path: archiveRelativePath(record.path) }));
   const documents = Array.isArray(backup.documents) ? backup.documents : [];
   const documentsByInvoice = new Map(documents.map(document => [Number(document.invoice_id), document]));
-  const requiredDocuments = backup.data.invoices.filter(invoice => invoice.archived_path);
+  const requiredDocuments = invoices.filter(invoice => invoice.archived_path);
   if (documentsByInvoice.size !== requiredDocuments.length || requiredDocuments.some(invoice => !documentsByInvoice.has(Number(invoice.id)))) throw new Error('La sauvegarde ne contient pas tous les PDF archivés.');
   for (const invoice of requiredDocuments) {
     const document = documentsByInvoice.get(Number(invoice.id));
@@ -180,9 +196,9 @@ async function restoreBackup(backup) {
     insertRows('clients', ['id', 'name', 'contact', 'email', 'phone', 'address', 'siren', 'created_at'], backup.data.clients);
     insertRows('sites', ['id', 'label', 'address', 'reference_first_name', 'reference_last_name', 'reference_phone', 'reference_email', 'latitude', 'longitude', 'created_at'], backup.data.sites);
     insertRows('services', ['id', 'name', 'description', 'unit_price_cents', 'default_quantity', 'created_at'], backup.data.services);
-    insertRows('invoices', ['id', 'number', 'client_id', 'status', 'issue_date', 'due_date', 'notes', 'total_cents', 'snapshot', 'archived_path', 'archive_sha256', 'verified_at', 'created_at', 'updated_at', 'site_id'], backup.data.invoices);
+    insertRows('invoices', ['id', 'number', 'client_id', 'status', 'issue_date', 'due_date', 'notes', 'total_cents', 'snapshot', 'archived_path', 'archive_sha256', 'verified_at', 'created_at', 'updated_at', 'site_id'], invoices);
     insertRows('invoice_lines', ['id', 'invoice_id', 'description', 'quantity', 'unit_price_cents', 'service_date', 'position', 'tax_included', 'site_id'], backup.data.invoice_lines);
-    insertRows('archive_records', ['id', 'invoice_id', 'path', 'sha256', 'bytes', 'verified_at', 'created_at'], backup.data.archive_records);
+    insertRows('archive_records', ['id', 'invoice_id', 'path', 'sha256', 'bytes', 'verified_at', 'created_at'], archiveRecords);
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
   return { clients: backup.data.clients.length, sites: backup.data.sites.length, services: backup.data.services.length, invoices: backup.data.invoices.length, documents: documents.length };
@@ -192,7 +208,7 @@ async function sendInvoiceEmail(material, pdf, requestedRecipient = '') {
   if (!process.env.SMTP_HOST || !process.env.MAIL_FROM) throw new Error('Configurez SMTP_HOST et MAIL_FROM dans .env pour activer l’envoi.');
   const recipient = clean(requestedRecipient) || material.client.email;
   if (!recipient) throw new Error('Aucun e-mail destinataire.');
-  const attachment = pdf || await fs.readFile(path.resolve(material.invoice.archived_path));
+  const attachment = pdf || await fs.readFile(archiveFilePath(material.invoice.archived_path));
   const transport = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_SECURE === 'true', auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined });
   await transport.sendMail({ from: process.env.MAIL_FROM, to: recipient, subject: `Facture ${material.invoice.number}`, text: `Bonjour,\n\nVeuillez trouver ci-joint la facture ${material.invoice.number}.\n\nCordialement,`, attachments: [{ filename: `facture-${material.invoice.number}.pdf`, content: attachment }] });
   return recipient;
@@ -411,7 +427,7 @@ app.get('/api/invoices/:id/pdf', async (req, res, next) => {
   try {
     const material = materializedInvoice(req.params.id); if (!material) return res.status(404).json({ error: 'Facture introuvable.' });
     let pdf;
-    if (material.invoice.archived_path) pdf = await fs.readFile(path.resolve(material.invoice.archived_path));
+    if (material.invoice.archived_path) pdf = await fs.readFile(archiveFilePath(material.invoice.archived_path));
     else pdf = await makeInvoicePdf(material.invoice, material.owner, material.client, material.lines, material.site);
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="facture-${material.invoice.number}.pdf"` }).send(pdf);
   } catch (error) { next(error); }
