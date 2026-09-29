@@ -128,18 +128,23 @@ function renderSettings() {
 function freshLine() { return { description: '', quantity: 1, unit_price_cents: 0, tax_included: true, site_id: null, service_date: today() }; }
 
 function renderEditor() {
-  const e = state.editor, immutable = e.status !== 'draft', selectedClient = state.clients.find(c => c.id === Number(e.client_id)) || e.client;
+  const e = state.editor;
+  if (!e) {
+    app.innerHTML = '<div class="card panel"><p class="subhead">Chargement de la facture…</p></div>';
+    return;
+  }
+  const immutable = e.status !== 'draft', selectedClient = state.clients.find(c => c.id === Number(e.client_id)) || e.client;
   const clientOptions = state.clients.map(c => `<option value="${c.id}" ${c.id === Number(e.client_id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
   const siteOptions = siteId => `<option value="">Aucun site</option>${state.sites.map(s => `<option value="${s.id}" ${s.id === Number(siteId) ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}`;
   const serviceOptions = state.services.map(s => `<option value="${s.id}">${esc(s.name)} · ${euro(s.unit_price_cents)}</option>`).join('');
-  const lines = e.lines.length ? e.lines.map((line, index) => `<div class="line-grid"><select class="select site-line" data-line="${index}" data-key="site_id" ${immutable ? 'disabled' : ''}>${siteOptions(line.site_id)}</select><input class="input description" data-line="${index}" data-key="description" value="${esc(line.description)}" placeholder="Description" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="quantity" type="number" step="1" min="1" value="${line.quantity}" ${immutable ? 'disabled' : ''}><input class="input date" data-line="${index}" data-key="service_date" type="date" value="${line.service_date || ''}" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="unit_price" type="number" step="0.01" min="0" value="${(line.unit_price_cents / 100).toFixed(2)}" ${immutable ? 'disabled' : ''}><label class="tax-check"><input data-line="${index}" data-key="tax_included" type="checkbox" ${taxIncluded(line.tax_included) ? 'checked' : ''} ${immutable ? 'disabled' : ''}><span>TVA comprise</span></label><span class="line-total total">${euro(lineAmount(line))}</span>${immutable ? '<span></span>' : `<button class="remove-line" data-action="remove-line" data-index="${index}" title="Retirer">×</button>`}</div>`).join('') : '<p class="empty">Ajoutez une ligne de prestation.</p>';
+  const lines = e.lines.length ? e.lines.map((line, index) => `<div class="line-grid"><select class="select site-line" data-line="${index}" data-key="site_id" ${immutable ? 'disabled' : ''}>${siteOptions(line.site_id)}</select><input class="input description" data-line="${index}" data-key="description" value="${esc(line.description)}" placeholder="Description" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="quantity" type="number" step="1" min="1" value="${line.quantity}" ${immutable ? 'disabled' : ''}><input class="input date" data-line="${index}" data-key="service_date" type="date" value="${line.service_date || ''}" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="unit_price" type="number" step="0.01" min="0" value="${(line.unit_price_cents / 100).toFixed(2)}" ${immutable ? 'disabled' : ''}><label class="tax-check"><input data-line="${index}" data-key="tax_included" type="checkbox" ${taxIncluded(line.tax_included) ? 'checked' : ''} ${immutable ? 'disabled' : ''}><span>${taxIncluded(line.tax_included) ? 'comprise' : '+ 20%'}</span></label><span class="line-total total">${euro(lineAmount(line))}</span>${immutable ? '<span></span>' : `<button class="remove-line" data-action="remove-line" data-index="${index}" title="Retirer">×</button>`}</div>`).join('') : '<p class="empty">Ajoutez une ligne de prestation.</p>';
   const total = e.lines.reduce((sum, l) => sum + lineAmount(l), 0);
   const archive = immutable ? `<button class="button secondary" data-action="check-archive" data-id="${e.id}">Vérifier l’archive</button><button class="button ghost" data-action="email" data-id="${e.id}">Envoyer par e-mail</button>` : '';
   const pendingEmail = !immutable ? '<button class="button ghost" disabled title="Disponible après l’archivage">Envoyer par e-mail</button>' : '';
   app.innerHTML = `<div class="editor"><header class="view-header"><div><p class="eyebrow">${immutable ? 'Document émis' : 'Brouillon'}</p><h1>Facture ${esc(e.number)}</h1><p class="subhead">${immutable ? 'Cette facture est verrouillée pour préserver l’archive.' : 'Préparez les lignes puis émettez le document une fois vérifié.'}</p></div><button class="button ghost" data-action="back-invoices">← Toutes les factures</button></header>
   <section class="invoice-top"><article class="card invoice-meta"><h2>Informations</h2><div class="form-grid"><div class="field"><label>Numéro</label>${immutable ? `<div class="invoice-number">${esc(e.number)}</div>` : `<input class="input invoice-number-input" data-invoice="number" inputmode="numeric" pattern="[0-9]+" value="${esc(e.number)}"><p class="helper">Modifiable : la prochaine facture suivra ce numéro.</p>`}</div><div class="field"><label>Statut</label>${invoiceBadge(e)}</div><div class="field"><label>Date d’émission</label><input class="input" data-invoice="issue_date" type="date" value="${e.issue_date}" ${immutable ? 'disabled' : ''}></div><div class="field"><label>Échéance</label><input class="input" data-invoice="due_date" type="date" value="${e.due_date || ''}" ${immutable ? 'disabled' : ''}></div></div></article>
   <article class="card invoice-client"><h2>Destinataire</h2><div class="field"><div class="field-label"><label>Client</label>${!immutable ? '<button class="link-button" data-action="new-client-from-invoice">Nouveau client</button>' : ''}</div><select class="select" data-invoice="client_id" ${immutable ? 'disabled' : ''}>${clientOptions}</select></div>${selectedClient?.email ? `<p class="helper">${esc(selectedClient.contact || selectedClient.name)} · ${esc(selectedClient.email)}</p>` : '<p class="helper">Ajoutez un e-mail au client pour permettre l’envoi.</p>'}</article></section>
-  <section class="card line-editor"><div class="line-tools"><h2>Prestations</h2>${!immutable ? `<div class="service-picker"><div class="field-label"><label>Prestation</label><button class="link-button" data-action="new-service-from-invoice">Nouvelle prestation</button></div><select class="select" id="service-preset"><option value="">Ajouter depuis le catalogue…</option>${serviceOptions}</select></div>` : ''}</div><div class="line-grid head"><span>Site / lieu</span><span>Description</span><span>Quantité</span><span>Date</span><span>Tarif</span><span>TVA</span><span>Total TTC</span><span></span></div>${lines}${!immutable ? '<div class="line-add-actions"><button class="button ghost small" data-action="add-line">＋ Ajouter une ligne</button><button class="button ghost small" data-action="new-site-from-invoice">⌖ Ajouter un site</button></div>' : ''}<p class="helper">TVA comprise : le tarif saisi est déjà TTC. Décochez pour appliquer 20 % au tarif HT.</p><div class="invoice-total"><span>Total TTC</span><strong>${euro(total)}</strong></div></section>
+  <section class="card line-editor"><div class="line-tools"><h2>Prestations</h2>${!immutable ? `<div class="service-picker"><div class="field-label"><label>Prestation</label><button class="link-button" data-action="new-service-from-invoice">Nouvelle prestation</button></div><select class="select" id="service-preset"><option value="">Ajouter depuis le catalogue…</option>${serviceOptions}</select></div>` : ''}</div><div class="line-grid head"><span>Site / lieu</span><span>Description</span><span>Heures</span><span>Date</span><span>Heure</span><span>TVA</span><span>Total TTC</span><span></span></div>${lines}${!immutable ? '<div class="line-add-actions"><button class="button ghost small" data-action="add-line">＋ Ajouter une ligne</button><button class="button ghost small" data-action="new-site-from-invoice">⌖ Ajouter un site</button></div>' : ''}<p class="helper">TVA comprise : le tarif saisi est déjà TTC. Décochez pour ajouter 20 % au tarif HT.</p><div class="invoice-total"><span>Total TTC</span><strong>${euro(total)}</strong></div></section>
   <section class="card panel" style="margin-top:18px"><div class="field"><label>Note interne (non affichée sur le PDF)</label><textarea class="textarea" data-invoice="notes" ${immutable ? 'disabled' : ''}>${esc(e.notes || '')}</textarea></div></section>
   <div class="editor-actions"><button class="button ghost" data-action="delete-invoice" data-id="${e.id}" ${immutable ? 'disabled' : ''}>Supprimer le brouillon</button><div class="right"><button class="button ghost" data-action="pdf" data-id="${e.id}">Aperçu PDF</button>${archive}${!immutable ? `<button class="button secondary" data-action="save-invoice">Enregistrer</button><button class="button" data-action="issue-invoice" data-id="${e.id}">Archiver la facture</button>${pendingEmail}` : ''}</div></div></div>`;
 }
@@ -147,6 +152,21 @@ function renderEditor() {
 function render(view) {
   navActive(view);
   if (view === 'dashboard') renderDashboard(); else if (view === 'invoices') renderInvoices(); else if (view === 'clients') renderClients(); else if (view === 'sites') renderSites(); else if (view === 'services') renderServices(); else if (view === 'settings') renderSettings(); else if (view.startsWith('invoice/')) renderEditor(); else location.hash = '#dashboard';
+}
+
+async function renderRoute() {
+  const view = location.hash.slice(1) || 'dashboard';
+  if (view.startsWith('invoice/')) {
+    const id = Number(view.slice('invoice/'.length));
+    if (!Number.isInteger(id) || id <= 0) {
+      state.editor = null;
+      location.hash = '#invoices';
+      render('invoices');
+      return;
+    }
+    if (!state.editor || state.editor.id !== id) state.editor = await api(`/api/invoices/${id}`);
+  }
+  render(view);
 }
 
 function clientModal(client = {}) {
@@ -308,6 +328,8 @@ document.addEventListener('submit', async event => {
 });
 
 document.querySelector('#menu-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('open'));
-window.addEventListener('hashchange', () => render(location.hash.slice(1) || 'dashboard'));
+window.addEventListener('hashchange', () => {
+  renderRoute().catch(error => toast(error.message, true));
+});
 
-try { await refresh(); render(location.hash.slice(1) || 'dashboard'); } catch (error) { app.innerHTML = `<div class="card panel"><h2>Facturo ne démarre pas</h2><p class="subhead">${esc(error.message)}</p></div>`; }
+try { await refresh(); await renderRoute(); } catch (error) { app.innerHTML = `<div class="card panel"><h2>Facturo ne démarre pas</h2><p class="subhead">${esc(error.message)}</p></div>`; }

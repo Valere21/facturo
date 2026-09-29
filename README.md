@@ -30,23 +30,25 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - Un site est choisi **sur chaque ligne de facture** : une facture mensuelle unique peut donc regrouper plusieurs lieux de mission.
 
 - **Prestations**
-  - Catalogue de raccourcis avec nom, description, tarif unitaire et quantité par défaut.
+  - Catalogue de raccourcis avec nom, description, tarif horaire et nombre d'heures par défaut.
   - Une prestation insérée dans un brouillon reste modifiable sans modifier le catalogue.
-  - Les quantités sont des entiers naturels (minimum `1`) ; le serveur valide aussi cette règle, pas seulement l'interface.
+  - Les heures sont des entiers naturels (minimum `1`) ; le serveur valide aussi cette règle, pas seulement l'interface.
 
 ## Factures
 
 - **Création et brouillons**
   - La création exige au moins un client. Un numéro est généré depuis la séquence locale, avec une échéance par défaut à 60 jours.
   - Le numéro est éditable tant que la facture est un brouillon. Après une modification manuelle, le prochain numéro suit le dernier numéro saisi ; les doublons sont refusés.
-  - Le brouillon contient le client, dates d'émission/échéance, note interne non imprimée et une ou plusieurs lignes : site, description, quantité, date, tarif et TVA.
-  - Une ligne est en « TVA comprise » par défaut : le tarif saisi est alors déjà TTC. Si la case est décochée, le total de la ligne applique `tarif × 1,20`.
+  - Le brouillon contient le client, dates d'émission/échéance, note interne non imprimée et une ou plusieurs lignes : site, description, heures, date, tarif horaire et TVA.
+  - Une ligne affiche « comprise » lorsque la TVA est incluse. Si la case est décochée, elle affiche « + 20% » et le total applique `tarif × 1,20`.
   - L'aperçu PDF enregistre d'abord silencieusement le brouillon, afin que le PDF corresponde aux dernières modifications.
   - Seuls les brouillons peuvent être modifiés ou supprimés. La suppression est accessible depuis la liste et l'éditeur.
 
 - **PDF**
   - Généré côté serveur avec PDFKit à partir de `lib/pdf.js`, selon la mise en page inspirée des exemples du dossier `doc/`.
   - Contient les coordonnées de l'émetteur, du client, le numéro, dates, lignes, total TTC, informations bancaires et conditions de paiement.
+  - Les descriptions longues retournent à la ligne sans troncature ; la hauteur de chaque ligne est calculée pour préserver l'espacement.
+  - La signature PNG définie par `SIGNATURE_PATH` est placée sous la mention « Signature ». Sur le Pi, elle est stockée hors Git dans `storage/signature.png`.
   - La mention micro-entreprise / « TVA non applicable, art. 293 B du CGI » est intégrée au document.
   - Après archivage, l'aperçu ne régénère pas le document : il lit le PDF archivé, source de référence de la facture émise.
 
