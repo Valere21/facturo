@@ -93,6 +93,26 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
 - « Restaurer une sauvegarde » vérifie le format, la présence de tous les PDF archivés et leurs SHA-256 avant de remplacer les données actuelles. Cette opération est destructive pour l'instance cible ; elle est prévue pour une migration vers le Raspberry Pi ou la reprise après incident. Les exports v1 créés avant le renommage (`facturato-backup`) restent acceptés.
 - Le fichier d'export doit être conservé hors du Raspberry Pi. Il peut contenir données clients et PDF : ne pas le déposer dans Git ni le transmettre sans protection.
 
+### Migration vers une nouvelle instance
+
+La migration portable est le parcours à utiliser pour une nouvelle machine. Elle réinjecte les informations générales de l'émetteur et la séquence de numérotation (`settings`), les clients, les sites, les prestations, les brouillons, les factures émises, leurs lignes, les traces d'archive et les PDF archivés. Les chemins historiques `storage/archive/...` sont convertis automatiquement vers le `ARCHIVE_DIR` de la machine cible.
+
+1. Sur l'instance source, ouvrir **Paramètres → Sauvegarde portable → Extraire les données**. Conserver le JSON téléchargé et vérifier que l'export ne contient pas d'avertissement concernant un PDF absent.
+2. Sur la nouvelle instance, cloner le code, installer les dépendances et créer la configuration externe. Les chemins doivent pointer vers les données de cette machine, par exemple :
+
+   ```bash
+   mkdir -p ~/.config/facturo ~/.local/share/facturo/archive
+   cp .env.example ~/.config/facturo/facturo.env
+   # éditer facturo.env : DATA_DIR, ARCHIVE_DIR, SIGNATURE_PATH et les éventuels secrets
+   npm ci
+   npm start
+   ```
+
+3. Ouvrir **Paramètres → Restaurer une sauvegarde**, sélectionner le JSON puis confirmer. La cible est remplacée par le contenu du fichier ; l'instance source n'est pas modifiée. Pour une restauration automatisée, le même contrat est disponible avec `POST /api/backup/import` et le corps `{ "confirm": true, "backup": <objet JSON> }`.
+4. Contrôler le résultat : informations de l'émetteur, présence du client et des sites, liste des brouillons, lignes du brouillon attendu, puis indicateur d'archive valide sur le tableau de bord ou `GET /api/invoices/:id/archive-check`.
+
+Le JSON ne contient ni la signature PNG ni les secrets SMTP/SUPER PDP. Recopier la signature vers `SIGNATURE_PATH` et renseigner les secrets dans le fichier `.env` externe séparément. La restauration doit être effectuée via l'instance locale ou le tunnel SSH d'administration ; le point HTTPS public configuré en lecture seule refuse les requêtes d'écriture.
+
 ## Structure technique et points d'entrée
 
 - `server.js` : API Express, règles de facturation, émission, archivage, contrôle d'intégrité, SMTP et import/export.
