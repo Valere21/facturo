@@ -68,6 +68,71 @@ function invoiceTotal(lines) {
   return lines.reduce((sum, line) => sum + lineTotal(line), 0);
 }
 
+function chronologicalTimestamp(value, fallback) {
+  const dateValue = clean(value) || clean(fallback);
+  const timestamp = Date.parse(`${dateValue}T12:00:00`);
+  return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+}
+
+function mergeLineCandidates(materials) {
+  return materials.flatMap(material => material.lines.map((line, index) => ({
+    line,
+    source: material.invoice,
+    sourceId: Number(material.invoice.id),
+    sourcePosition: Number(line.position ?? index),
+    lineId: Number(line.id || 0),
+    timestamp: chronologicalTimestamp(line.service_date, material.invoice.issue_date)
+  }))).sort((left, right) => left.timestamp - right.timestamp
+    || clean(left.line.service_date).localeCompare(clean(right.line.service_date))
+    || clean(left.source.issue_date).localeCompare(clean(right.source.issue_date))
+    || left.sourceId - right.sourceId
+    || left.sourcePosition - right.sourcePosition
+    || left.lineId - right.lineId);
+}
+
+async function removeInvoice(invoiceId) {
+  const invoice = row('SELECT * FROM invoices WHERE id=?', Number(invoiceId));
+  if (!invoice) return null;
+
+  let archivePath = null;
+  let temporaryArchivePath = null;
+  if (invoice.archived_path) {
+    const shared = row('SELECT COUNT(*) AS count FROM invoices WHERE archived_path=? AND id<>?', invoice.archived_path, invoice.id);
+    if (!shared?.count) {
+      archivePath = archiveFilePath(invoice.archived_path);
+      temporaryArchivePath = `${archivePath}.${process.pid}.${Date.now()}.delete`;
+      try {
+        await fs.rename(archivePath, temporaryArchivePath);
+      } catch (error) {
+        if (error.code === 'ENOENT') temporaryArchivePath = null;
+        else throw error;
+      }
+    }
+  }
+
+  let transactionStarted = false;
+  try {
+    db.exec('BEGIN');
+    transactionStarted = true;
+    run('DELETE FROM invoices WHERE id=?', invoice.id);
+    db.exec('COMMIT');
+    transactionStarted = false;
+  } catch (error) {
+    if (transactionStarted) {
+      try { db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+    }
+    if (temporaryArchivePath && archivePath) {
+      try { await fs.rename(temporaryArchivePath, archivePath); } catch { /* report the original error */ }
+    }
+    throw error;
+  }
+
+  if (temporaryArchivePath) {
+    try { await fs.unlink(temporaryArchivePath); } catch (error) { console.warn(`Archive supprimée de la base mais fichier temporaire conservé : ${error.message}`); }
+  }
+  return invoice;
+}
+
 function normaliseLines(lines) {
   if (!Array.isArray(lines) || !lines.length) throw new Error('Ajoutez au moins une prestation.');
   return lines.map((line, position) => {
@@ -227,6 +292,61 @@ async function archiveOnServer(invoiceId) {
   return { invoice: publicInvoice(materializedInvoice(live.invoice.id)), archive: archived };
 }
 
+function mergeSourceIds(value) {
+  if (!Array.isArray(value)) throw new Error('Sélectionnez au moins deux factures à fusionner.');
+  const ids = value.map(Number);
+  if (ids.length < 2 || ids.some(id => !Number.isInteger(id) || id < 1) || new Set(ids).size !== ids.length) {
+    throw new Error('Sélectionnez au moins deux factures distinctes à fusionner.');
+  }
+  return ids;
+}
+
+async function mergeInvoices(sourceIds) {
+  const ids = mergeSourceIds(sourceIds);
+  const materials = ids.map(id => materializedInvoice(id));
+  if (materials.some(material => !material)) throw new Error('Une facture sélectionnée est introuvable.');
+  if (materials.some(material => !['draft', 'issued', 'sent'].includes(material.invoice.status))) {
+    throw new Error('Seuls les brouillons et factures émises peuvent être fusionnés.');
+  }
+  const firstClientId = Number(materials[0].invoice.client_id);
+  if (materials.some(material => Number(material.invoice.client_id) !== firstClientId)) {
+    throw new Error('Les factures à fusionner doivent appartenir au même client.');
+  }
+
+  const candidates = mergeLineCandidates(materials);
+  if (!candidates.length) throw new Error('Les factures sélectionnées ne contiennent aucune ligne.');
+  const lines = normaliseLines(candidates.map(candidate => ({
+    description: candidate.line.description,
+    quantity: candidate.line.quantity,
+    unit_price_cents: candidate.line.unit_price_cents,
+    tax_included: candidate.line.tax_included,
+    site_id: candidate.line.site_id,
+    service_date: candidate.line.service_date
+  })));
+  const issueDate = today();
+  const sourceNumbers = materials.map(material => material.invoice.number);
+  const notes = [
+    `Fusion des factures ${sourceNumbers.join(', ')}.`,
+    ...materials
+      .filter(material => clean(material.invoice.notes))
+      .map(material => `Note facture ${material.invoice.number} : ${clean(material.invoice.notes)}`)
+  ].join('\n');
+
+  db.exec('BEGIN');
+  try {
+    const number = nextNumber();
+    const result = run('INSERT INTO invoices(number,client_id,issue_date,due_date,notes,total_cents) VALUES (?,?,?,?,?,?)', number, firstClientId, issueDate, dueDate(issueDate), notes, invoiceTotal(lines));
+    for (const line of lines) {
+      run('INSERT INTO invoice_lines(invoice_id,description,quantity,unit_price_cents,tax_included,site_id,service_date,position) VALUES (?,?,?,?,?,?,?,?)', result.lastInsertRowid, line.description, line.quantity, line.unit_price_cents, line.tax_included ? 1 : 0, line.site_id, line.service_date, line.position);
+    }
+    db.exec('COMMIT');
+    return { invoice: publicInvoice(liveInvoice(result.lastInsertRowid)), source_ids: ids };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function dueDate(issueDate) {
   const date = new Date(`${issueDate}T12:00:00`);
   date.setDate(date.getDate() + 60);
@@ -374,6 +494,11 @@ app.get('/api/invoices/:id', (req, res) => {
   if (!value) return res.status(404).json({ error: 'Facture introuvable.' });
   res.json(publicInvoice(value));
 });
+app.post('/api/invoices/merge', async (req, res, next) => {
+  try {
+    res.status(201).json(await mergeInvoices(req.body?.invoice_ids));
+  } catch (error) { next(error); }
+});
 app.post('/api/invoices', (req, res, next) => {
   try {
     const b = req.body;
@@ -408,11 +533,11 @@ app.put('/api/invoices/:id', (req, res, next) => {
     res.json(publicInvoice(liveInvoice(existing.invoice.id)));
   } catch (error) { next(error); }
 });
-app.delete('/api/invoices/:id', (req, res, next) => {
+app.delete('/api/invoices/:id', async (req, res, next) => {
   try {
-    const invoice = liveInvoice(req.params.id); if (!invoice) return res.status(404).json({ error: 'Facture introuvable.' });
-    if (invoice.invoice.status !== 'draft') return res.status(409).json({ error: 'Une facture émise ne peut pas être supprimée.' });
-    run('DELETE FROM invoices WHERE id=?', invoice.invoice.id); res.status(204).end();
+    const invoice = await removeInvoice(req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Facture introuvable.' });
+    res.status(204).end();
   } catch (error) { next(error); }
 });
 app.post('/api/invoices/:id/issue', async (req, res, next) => {

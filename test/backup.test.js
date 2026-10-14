@@ -219,6 +219,29 @@ test('restores settings, clients, sites, drafts and archived PDFs on a fresh ins
     assert.deepEqual({ checked: dashboard.archive.checked, valid: dashboard.archive.valid }, { checked: 1, valid: 1 });
     assert.equal(archiveCheck.ok, true);
     assert.equal((await fs.stat(path.join(archiveDir, '2026', 'facture-001.pdf'))).size, Buffer.from('%PDF-1.4 facturo backup integration test\n').length);
+
+    const mergedResponse = await fetch(`http://127.0.0.1:${port}/api/invoices/merge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ invoice_ids: [11, 10] })
+    });
+    assert.equal(mergedResponse.status, 201);
+    const merged = await mergedResponse.json();
+    assert.deepEqual(merged.source_ids, [11, 10]);
+    assert.equal(merged.invoice.status, 'draft');
+    assert.equal(merged.invoice.number, '003');
+    assert.deepEqual(merged.invoice.lines.map(line => line.description), ['Prestation archivée', 'Prestation en brouillon']);
+    assert.deepEqual(merged.invoice.lines.map(line => line.service_date), ['2026-01-02', '2026-01-03']);
+    assert.match(merged.invoice.notes, /Fusion des factures 002, 001/);
+
+    const sourceAfterMerge = await (await fetch(`http://127.0.0.1:${port}/api/invoices/10`)).json();
+    assert.equal(sourceAfterMerge.status, 'issued');
+    const deleted = await fetch(`http://127.0.0.1:${port}/api/invoices/10`, { method: 'DELETE' });
+    assert.equal(deleted.status, 204);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/invoices/10`)).status, 404);
+    await assert.rejects(fs.stat(path.join(archiveDir, '2026', 'facture-001.pdf')), { code: 'ENOENT' });
+    const dashboardAfterDelete = await (await fetch(`http://127.0.0.1:${port}/api/dashboard`)).json();
+    assert.deepEqual({ checked: dashboardAfterDelete.archive.checked, valid: dashboardAfterDelete.archive.valid }, { checked: 0, valid: 0 });
   } finally {
     if (child.exitCode === null) {
       child.kill('SIGTERM');

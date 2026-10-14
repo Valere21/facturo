@@ -43,7 +43,8 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - Dans l'éditeur classique, la colonne du prix affiche « Tarif horaire » ; le PDF affiche « Taux horaire ».
   - Une ligne affiche « comprise » lorsque la TVA est incluse. Si la case est décochée, elle affiche « + 20% » et le total applique `tarif × 1,20`.
   - L'aperçu PDF enregistre d'abord silencieusement le brouillon, afin que le PDF corresponde aux dernières modifications.
-  - Seuls les brouillons peuvent être modifiés ou supprimés. La suppression est accessible depuis la liste et l'éditeur.
+  - Seuls les brouillons peuvent être modifiés. Un brouillon peut être supprimé depuis la liste ou l'éditeur ; une facture émise peut être supprimée explicitement depuis son détail, ce qui supprime aussi son PDF et ses traces d'archive.
+  - Dans l'onglet **Factures**, « Fusionner des factures » permet de sélectionner au moins deux documents du même client, brouillons ou factures archivées. La validation crée un nouveau brouillon, conserve les factures sources inchangées et trie leurs lignes par date de prestation puis date de facture.
 
 - **PDF**
   - Généré côté serveur avec PDFKit à partir de `lib/pdf.js`, selon la mise en page inspirée des exemples du dossier `doc/`.
@@ -123,7 +124,8 @@ Le JSON ne contient ni la signature PNG ni les secrets SMTP/SUPER PDP. Recopier 
 - Principales routes :
   - `GET /api/dashboard` ;
   - CRUD `/api/clients`, `/api/sites`, `/api/services` ;
-  - création, lecture, mise à jour et suppression de brouillons sous `/api/invoices` ;
+  - création, lecture et mise à jour des brouillons sous `/api/invoices`, avec suppression explicite des brouillons ou factures émises ;
+  - `POST /api/invoices/merge` pour créer un brouillon à partir de plusieurs factures du même client ;
   - `POST /api/invoices/:id/archive`, `GET /api/invoices/:id/archive-check`, `GET /api/invoices/:id/pdf`, `POST /api/invoices/:id/email` ;
   - `GET /api/backup/export` et `POST /api/backup/import`.
 

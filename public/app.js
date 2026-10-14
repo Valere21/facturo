@@ -1,7 +1,7 @@
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
 const modalContent = document.querySelector('#modal-content');
-const state = { dashboard: null, clients: [], sites: [], services: [], invoices: [], owner: null, editor: null };
+const state = { dashboard: null, clients: [], sites: [], services: [], invoices: [], owner: null, editor: null, mergeMode: false, mergeSelection: new Set(), mergeBusy: false };
 
 const euro = cents => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(Number(cents || 0) / 100);
 const date = value => value ? new Intl.DateTimeFormat('fr-FR').format(new Date(`${value}T12:00:00`)) : '—';
@@ -76,11 +76,18 @@ function renderDashboard() {
 }
 
 function renderInvoices() {
-  const row = invoice => `<tr class="invoice-row" tabindex="0" role="button" data-action="open-invoice" data-id="${invoice.id}"><td><strong>${esc(invoice.number)}</strong><br><span class="subtle">${date(invoice.issue_date)}</span></td><td><div class="client-cell"><strong>${esc(invoice.client_name)}</strong><span>Échéance ${date(invoice.due_date)}</span></div></td><td>${invoiceBadge(invoice)}</td><td>${serverControl(invoice)}</td><td>${clientMailControl(invoice)}</td><td class="money">${euro(invoice.total_cents)}</td><td class="actions"><button class="link-button" data-action="pdf" data-id="${invoice.id}">PDF</button>${invoice.status === 'draft' ? `<button class="link-button red" data-action="delete-invoice" data-id="${invoice.id}">Supprimer</button>` : ''}</td></tr>`;
-  const table = (invoices, empty) => `<div class="table-wrap"><table class="data-table"><thead><tr><th>Facture</th><th>Client</th><th>Statut</th><th>Serveur</th><th>E-mail client</th><th>Total TTC</th><th></th></tr></thead><tbody>${invoices.length ? invoices.map(row).join('') : `<tr><td colspan="7" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
+  const merging = state.mergeMode;
+  const selected = state.mergeSelection;
+  const mergeHead = merging ? '<th class="merge-select-heading" aria-label="Sélection"></th>' : '';
+  const mergeAction = merging
+    ? `<div class="toolbar"><button class="button" data-action="confirm-merge" ${selected.size < 2 || state.mergeBusy ? 'disabled' : ''}>${state.mergeBusy ? 'Fusion…' : `Valider la fusion${selected.size ? ` (${selected.size})` : ''}`}</button><button class="button ghost" data-action="cancel-merge" ${state.mergeBusy ? 'disabled' : ''}>Annuler</button></div>`
+    : '<div class="toolbar"><button class="button secondary" data-action="start-merge">Fusionner des factures</button><button class="button" data-action="new-invoice">＋ Nouvelle facture</button></div>';
+  const row = invoice => `<tr class="invoice-row" tabindex="0" role="button" data-action="open-invoice" data-id="${invoice.id}"><td><strong>${esc(invoice.number)}</strong><br><span class="subtle">${date(invoice.issue_date)}</span></td><td><div class="client-cell"><strong>${esc(invoice.client_name)}</strong><span>Échéance ${date(invoice.due_date)}</span></div></td><td>${invoiceBadge(invoice)}</td><td>${serverControl(invoice)}</td><td>${clientMailControl(invoice)}</td><td class="money">${euro(invoice.total_cents)}</td>${merging ? `<td class="merge-select-cell"><input class="merge-checkbox" type="checkbox" data-action="toggle-merge" data-id="${invoice.id}" ${selected.has(invoice.id) ? 'checked' : ''} aria-label="Sélectionner la facture ${esc(invoice.number)}"></td>` : ''}<td class="actions"><button class="link-button" data-action="pdf" data-id="${invoice.id}">PDF</button>${invoice.status === 'draft' ? `<button class="link-button red" data-action="delete-invoice" data-id="${invoice.id}">Supprimer</button>` : ''}</td></tr>`;
+  const table = (invoices, empty) => `<div class="table-wrap"><table class="data-table"><thead><tr><th>Facture</th><th>Client</th><th>Statut</th><th>Serveur</th><th>E-mail client</th><th>Total TTC</th>${mergeHead}<th></th></tr></thead><tbody>${invoices.length ? invoices.map(row).join('') : `<tr><td colspan="${merging ? 8 : 7}" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
   const drafts = state.invoices.filter(invoice => invoice.status === 'draft');
   const validated = state.invoices.filter(invoice => invoice.status !== 'draft');
-  app.innerHTML = `${viewHeader('Facturation', 'Vos factures', 'Les factures émises sont figées et archivées avec une empreinte de contrôle.', '<button class="button" data-action="new-invoice">＋ Nouvelle facture</button>')}
+  const mergeHint = merging ? '<p class="helper merge-hint">Sélectionnez au moins deux factures du même client. Les brouillons et factures archivées peuvent être combinés ; les factures sources resteront inchangées.</p>' : '';
+  app.innerHTML = `${viewHeader('Facturation', 'Vos factures', 'Les factures émises sont figées et archivées avec une empreinte de contrôle.', mergeAction)}${mergeHint}
     <section class="invoice-sections">
       <article class="card panel"><div class="invoice-section-heading"><h2>Brouillons</h2><p class="helper">${drafts.length} facture${drafts.length > 1 ? 's' : ''} à préparer ou finaliser.</p></div>${table(drafts, 'Aucun brouillon pour le moment.')}</article>
       <article class="card panel"><div class="invoice-section-heading"><h2>Avoirs</h2><p class="helper">Factures validées · ${validated.length} document${validated.length > 1 ? 's' : ''} émis.</p></div>${table(validated, 'Aucune facture validée pour le moment.')}</article>
@@ -146,11 +153,16 @@ function renderEditor() {
   <article class="card invoice-client"><h2>Destinataire</h2><div class="field"><div class="field-label"><label>Client</label>${!immutable ? '<button class="link-button" data-action="new-client-from-invoice">Nouveau client</button>' : ''}</div><select class="select" data-invoice="client_id" ${immutable ? 'disabled' : ''}>${clientOptions}</select></div>${selectedClient?.email ? `<p class="helper">${esc(selectedClient.contact || selectedClient.name)} · ${esc(selectedClient.email)}</p>` : '<p class="helper">Ajoutez un e-mail au client pour permettre l’envoi.</p>'}</article></section>
   <section class="card line-editor"><div class="line-tools"><h2>Prestations</h2>${!immutable ? `<div class="service-picker"><div class="field-label"><label>Prestation</label><button class="link-button" data-action="new-service-from-invoice">Nouvelle prestation</button></div><select class="select" id="service-preset"><option value="">Ajouter depuis le catalogue…</option>${serviceOptions}</select></div>` : ''}</div><div class="line-grid head"><span>Site / lieu</span><span>Description</span><span>Heures</span><span>Date</span><span>Tarif horaire</span><span>TVA</span><span>Total TTC</span><span></span></div>${lines}${!immutable ? '<div class="line-add-actions"><button class="button ghost small" data-action="add-line">＋ Ajouter une ligne</button><button class="button ghost small" data-action="new-site-from-invoice">⌖ Ajouter un site</button></div>' : ''}<p class="helper">TVA comprise : le tarif saisi est déjà TTC. Décochez pour ajouter 20 % au tarif HT.</p><div class="invoice-total"><span>Total TTC</span><strong>${euro(total)}</strong></div></section>
   <section class="card panel" style="margin-top:18px"><div class="field"><label>Note interne (non affichée sur le PDF)</label><textarea class="textarea" data-invoice="notes" ${immutable ? 'disabled' : ''}>${esc(e.notes || '')}</textarea></div></section>
-  <div class="editor-actions"><button class="button ghost" data-action="delete-invoice" data-id="${e.id}" ${immutable ? 'disabled' : ''}>Supprimer le brouillon</button><div class="right"><button class="button ghost" data-action="pdf" data-id="${e.id}">Aperçu PDF</button>${archive}${!immutable ? `<button class="button secondary" data-action="save-invoice">Enregistrer</button><button class="button" data-action="issue-invoice" data-id="${e.id}">Archiver la facture</button>${pendingEmail}` : ''}</div></div></div>`;
+  <div class="editor-actions"><button class="button ${immutable ? 'danger' : 'ghost'}" data-action="delete-invoice" data-id="${e.id}">${immutable ? 'Supprimer la facture archivée' : 'Supprimer le brouillon'}</button><div class="right"><button class="button ghost" data-action="pdf" data-id="${e.id}">Aperçu PDF</button>${archive}${!immutable ? `<button class="button secondary" data-action="save-invoice">Enregistrer</button><button class="button" data-action="issue-invoice" data-id="${e.id}">Archiver la facture</button>${pendingEmail}` : ''}</div></div></div>`;
 }
 
 function render(view) {
   navActive(view);
+  if (view !== 'invoices' && state.mergeMode) {
+    state.mergeMode = false;
+    state.mergeSelection = new Set();
+    state.mergeBusy = false;
+  }
   if (view === 'dashboard') renderDashboard(); else if (view === 'invoices') renderInvoices(); else if (view === 'clients') renderClients(); else if (view === 'sites') renderSites(); else if (view === 'services') renderServices(); else if (view === 'settings') renderSettings(); else if (view.startsWith('invoice/')) renderEditor(); else location.hash = '#dashboard';
 }
 
@@ -189,6 +201,49 @@ async function newInvoice() {
   if (!state.clients.length) { toast('Ajoutez d’abord un client.', true); location.hash = '#clients'; return; }
   const invoice = await api('/api/invoices', { method:'POST', body:JSON.stringify({ client_id: state.clients[0].id, issue_date: today() }) });
   state.editor = { ...invoice, lines: [freshLine()] }; location.hash = `#invoice/${invoice.id}`;
+}
+
+function startMerge() {
+  state.mergeMode = true;
+  state.mergeSelection = new Set();
+  render('invoices');
+}
+
+function cancelMerge() {
+  if (state.mergeBusy) return;
+  state.mergeMode = false;
+  state.mergeSelection = new Set();
+  render('invoices');
+}
+
+function toggleMergeSelection(id) {
+  const invoiceId = Number(id);
+  const selection = new Set(state.mergeSelection);
+  if (selection.has(invoiceId)) selection.delete(invoiceId); else selection.add(invoiceId);
+  state.mergeSelection = selection;
+  render('invoices');
+}
+
+async function mergeSelectedInvoices() {
+  if (state.mergeBusy) return;
+  if (state.mergeSelection.size < 2) throw new Error('Sélectionnez au moins deux factures à fusionner.');
+  state.mergeBusy = true;
+  render('invoices');
+  try {
+    const result = await api('/api/invoices/merge', { method:'POST', body:JSON.stringify({ invoice_ids: [...state.mergeSelection] }) });
+    state.mergeMode = false;
+    state.mergeSelection = new Set();
+    await refresh();
+    state.editor = result.invoice;
+    location.hash = `#invoice/${result.invoice.id}`;
+    renderEditor();
+    toast(`Fusion créée dans le brouillon ${result.invoice.number}.`);
+  } catch (error) {
+    state.mergeBusy = false;
+    render('invoices');
+    throw error;
+  }
+  state.mergeBusy = false;
 }
 
 function updateEditorFromInput(target) {
@@ -254,9 +309,13 @@ app.addEventListener('click', async event => {
   const { action, id, index } = button.dataset;
   try {
     if (action === 'new-invoice') await newInvoice();
+    if (action === 'start-merge') startMerge();
+    if (action === 'cancel-merge') cancelMerge();
+    if (action === 'toggle-merge') { event.stopPropagation(); toggleMergeSelection(id); return; }
+    if (action === 'confirm-merge') await mergeSelectedInvoices();
     if (action === 'export-backup') window.location.assign('/api/backup/export');
     if (action === 'restore-backup') document.querySelector('#backup-file')?.click();
-    if (action === 'open-invoice') await openInvoice(id);
+    if (action === 'open-invoice' && !state.mergeMode) await openInvoice(id);
     if (action === 'back-invoices') location.hash = '#invoices';
     if (action === 'new-client') clientModal();
     if (action === 'edit-client') clientModal(state.clients.find(c => c.id === Number(id)));
@@ -276,7 +335,19 @@ app.addEventListener('click', async event => {
     if (action === 'save-invoice') await saveInvoice();
     if (action === 'issue-invoice') { await saveInvoice(true); if (confirm('Archiver cette facture sur le serveur ? Elle sera figée.')) { await archiveInvoice(id); renderEditor(); } }
     if (action === 'archive-on-server' && confirm('Archiver cette facture sur le serveur ?')) { await archiveInvoice(id); render('invoices'); }
-    if (action === 'delete-invoice' && confirm('Supprimer ce brouillon ?')) { await api(`/api/invoices/${id}`, { method:'DELETE' }); state.editor = null; await refresh(); location.hash = '#invoices'; render('invoices'); toast('Brouillon supprimé.'); }
+    if (action === 'delete-invoice') {
+      const archived = state.editor?.id === Number(id) && state.editor.status !== 'draft';
+      const label = archived ? 'la facture archivée' : 'le brouillon';
+      const warning = archived ? ' Cette action supprime également le PDF archivé.' : '';
+      if (confirm(`Supprimer ${label} ?${warning}`)) {
+        await api(`/api/invoices/${id}`, { method:'DELETE' });
+        state.editor = null;
+        await refresh();
+        location.hash = '#invoices';
+        render('invoices');
+        toast(archived ? 'Facture archivée supprimée.' : 'Brouillon supprimé.');
+      }
+    }
     if (action === 'pdf') {
       if (location.hash === `#invoice/${id}` && state.editor?.id === Number(id) && state.editor.status === 'draft') {
         await saveInvoice(true);
@@ -311,7 +382,7 @@ app.addEventListener('change', event => {
 
 app.addEventListener('keydown', async event => {
   const row = event.target.closest('.invoice-row');
-  if (!row || event.key !== 'Enter' || event.target.closest('button')) return;
+  if (!row || state.mergeMode || event.key !== 'Enter' || event.target.closest('button')) return;
   event.preventDefault();
   try { await openInvoice(row.dataset.id); } catch (error) { toast(error.message, true); }
 });
