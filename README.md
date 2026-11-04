@@ -45,6 +45,7 @@ Ouvrir `http://localhost:3030`. Définir `ARCHIVE_DIR` dans `.env` vers un volum
   - L'aperçu PDF enregistre d'abord silencieusement le brouillon, afin que le PDF corresponde aux dernières modifications.
   - Seuls les brouillons peuvent être modifiés. Un brouillon peut être supprimé depuis la liste ou l'éditeur ; une facture émise peut être supprimée explicitement depuis son détail, ce qui supprime aussi son PDF et ses traces d'archive.
   - Dans l'onglet **Factures**, « Fusionner des factures » permet de sélectionner au moins deux documents du même client, brouillons ou factures archivées. La validation crée un nouveau brouillon, conserve les factures sources inchangées et trie leurs lignes par date de prestation puis date de facture.
+  - Depuis le détail d'une facture archivée, « Générer le brouillon » crée une copie modifiable avec un nouveau numéro. Le lien vers la fiche client, les dates, la note interne et les prestations sont repris ; le PDF et le statut d'origine restent inchangés. Si la fiche client a changé depuis l'archivage, le brouillon utilise sa version actuelle. Ce brouillon ne remplace ni n'annule la facture d'origine.
 
 - **PDF**
   - Généré côté serveur avec PDFKit à partir de `lib/pdf.js`, selon la mise en page inspirée des exemples du dossier `doc/`.
@@ -112,7 +113,7 @@ La migration portable est le parcours à utiliser pour une nouvelle machine. Ell
 3. Ouvrir **Paramètres → Restaurer une sauvegarde**, sélectionner le JSON puis confirmer. La cible est remplacée par le contenu du fichier ; l'instance source n'est pas modifiée. Pour une restauration automatisée, le même contrat est disponible avec `POST /api/backup/import` et le corps `{ "confirm": true, "backup": <objet JSON> }`.
 4. Contrôler le résultat : informations de l'émetteur, présence du client et des sites, liste des brouillons, lignes du brouillon attendu, puis indicateur d'archive valide sur le tableau de bord ou `GET /api/invoices/:id/archive-check`.
 
-Le JSON ne contient ni la signature PNG ni les secrets SMTP/SUPER PDP. Recopier la signature vers `SIGNATURE_PATH` et renseigner les secrets dans le fichier `.env` externe séparément. La restauration doit être effectuée via l'instance locale ou le tunnel SSH d'administration ; le point HTTPS public configuré en lecture seule refuse les requêtes d'écriture.
+Le JSON ne contient ni la signature PNG ni les secrets SMTP/SUPER PDP. Recopier la signature vers `SIGNATURE_PATH` et renseigner les secrets dans le fichier `.env` externe séparément. La restauration peut être effectuée via l'instance locale, le tunnel SSH d'administration ou l'API HTTPS authentifiée ; l'import remplace les données de l'instance cible.
 
 ## Structure technique et points d'entrée
 
@@ -136,10 +137,10 @@ Le JSON ne contient ni la signature PNG ni les secrets SMTP/SUPER PDP. Recopier 
 Facturo s'exécute sous le compte système `donald`, depuis le dépôt :
 
 ```text
-/home/donald/Informatique/C++/facturo
+/home/donald/informatique/C++/facturo
 ```
 
-Le service systemd est `/etc/systemd/system/facturo.service`. Il utilise `User=donald`, `WorkingDirectory=/home/donald/Informatique/C++/facturo`, charge `/home/donald/.config/facturo/facturo.env` et lance `/usr/bin/node .../server.js`. Les journaux se consultent avec `journalctl -u facturo.service`.
+Le service systemd est `/etc/systemd/system/facturo.service`. Il utilise `User=donald`, `WorkingDirectory=/home/donald/informatique/C++/facturo`, charge `/home/donald/.config/facturo/facturo.env` et lance `/usr/bin/node .../server.js`. Attention à la casse : le dossier `Informatique` avec une majuscule n'existe pas sur le Pi. Les journaux se consultent avec `journalctl -u facturo.service`.
 
 Le serveur Node écoute uniquement sur `127.0.0.1:3030`. La configuration actuellement active sur le Pi est :
 
@@ -169,28 +170,41 @@ La base est SQLite en mode WAL. Elle contient les tables `settings`, `clients`, 
 
 ### HTTPS, certificat et authentification
 
-L'accès externe est :
+L'accès externe principal est :
 
 ```text
-https://donald-pomme.duckdns.org:8443/
+https://donald-facturo.duckdns.org/
 ```
 
-Le routeur redirige le TCP public `8443` vers `192.168.1.99:8443`. Le reverse proxy est défini dans :
+L'ancien accès `https://donald-pomme.duckdns.org/` reste actif pour le moment. Le HTTPS public répond sur `443` et arrive sur Nginx, qui écoute `8443` sur le Pi. Le nouveau virtual host Facturo ne contient aucune route Pomme ; ses fichiers sont :
+
+```text
+/etc/nginx/sites-available/facturo
+/etc/nginx/sites-enabled/facturo   (lien vers le fichier précédent)
+/etc/nginx/snippets/facturo-readonly-location.conf
+```
+
+Le virtual host historique `donald-pomme` conserve ses routes `/pomme/` et `/pomme-health` dans :
 
 ```text
 /etc/nginx/sites-available/pomme
 /etc/nginx/sites-enabled/pomme   (lien vers le fichier précédent)
-/etc/nginx/snippets/facturo-readonly-location.conf
 ```
 
-Le certificat Let's Encrypt utilisé par Nginx est :
+Le certificat Let's Encrypt de Facturo est :
 
 ```text
-/etc/letsencrypt/live/donald-pomme.duckdns.org/fullchain.pem
-/etc/letsencrypt/live/donald-pomme.duckdns.org/privkey.pem
+/etc/letsencrypt/live/donald-facturo.duckdns.org/fullchain.pem
+/etc/letsencrypt/live/donald-facturo.duckdns.org/privkey.pem
 ```
 
-L'authentification HTTP Basic Facturo utilise `/etc/nginx/.htpasswd-facturo`. Le compte est distinct d'un compte Linux. Le proxy autorise actuellement seulement `GET` et `HEAD` (`403` pour une écriture publique), même si l'application Node est en mode normal pour l'administration par SSH.
+Certbot renouvelle ce certificat via le défi HTTP-01 et le webroot `/var/lib/letsencrypt`. `certbot.timer` est activé ; après renouvellement, `/etc/letsencrypt/renewal-hooks/deploy/facturo-nginx-reload` recharge Nginx. Apache sert seulement `/.well-known/acme-challenge/` en HTTP pour ce nom et refuse les autres chemins avec `403` ; sa configuration versionnée est `deploy/apache/zz-donald-facturo-http.conf`.
+
+Le nom `donald-facturo.duckdns.org` est mis à jour toutes les cinq minutes par `facturo-duckdns.timer`. Son jeton DuckDNS est dans `/etc/duckdns/token` (root, mode `600`) et le script actif est `/usr/local/bin/facturo-duckdns-update-ip.sh`.
+
+L'authentification HTTP Basic Facturo utilise `/etc/nginx/.htpasswd-facturo` avec l'identifiant `facturo`. Le compte est distinct d'un compte Linux. Dans la configuration active, `/api/` accepte les requêtes de lecture et d'écriture après authentification. La règle `GET`/`HEAD` s'applique à l'interface et aux ressources statiques sous `/`. Le nom du fichier de snippet contient encore `readonly`, mais ne décrit plus à lui seul le comportement réel de l'API.
+
+Apache sert le HTTP public sur le port `80`. Le virtual host `zz-donald-pomme-http-deny.conf` refuse `http://donald-pomme.duckdns.org/` avec `403`, sans modifier `http://rapido-event.fr/`. Sa source versionnée est `deploy/apache/zz-donald-pomme-http-deny.conf`.
 
 Fail2ban utilise :
 
@@ -209,22 +223,22 @@ Les logs Nginx sont `/var/log/nginx/access.log` et `/var/log/nginx/error.log`. L
 
 ### Accès d'administration par SSH
 
-Le port SSH public utilisé par l'alias `donald` est `9608`. Pour utiliser normalement les requêtes `GET`, `POST`, `PUT` et `DELETE` depuis un autre réseau :
+Le port SSH public utilisé par l'alias `donald` est `9608`. Un tunnel SSH donne un accès direct à Node sans authentification HTTP Basic, utile pour l'administration depuis un autre réseau :
 
 ```bash
 ssh -N -p 9608 -L 8080:127.0.0.1:3030 donald@86.69.216.187
 ```
 
-Puis ouvrir `http://127.0.0.1:8080/`. Ce tunnel atteint directement Node et contourne le filtrage Nginx public ; il ne crée pas de session Linux interactive.
+Puis ouvrir `http://127.0.0.1:8080/`. Ce tunnel atteint directement Node et ne crée pas de session Linux interactive. L'accès HTTPS public authentifié accepte également les opérations API de lecture et d'écriture.
 
 ### Re-cloner le dépôt sans toucher aux données
 
-Après migration, le dépôt peut être supprimé et re-cloné sans sauvegarde préalable : les données, la signature et la configuration sont hors de `/home/donald/Informatique/C++/facturo`. Ne pas supprimer `/home/donald/.config/facturo` ni `/home/donald/.local/share/facturo`.
+Après migration, le dépôt peut être supprimé et re-cloné sans sauvegarde préalable : les données, la signature et la configuration sont hors de `/home/donald/informatique/C++/facturo`. Ne pas supprimer `/home/donald/.config/facturo` ni `/home/donald/.local/share/facturo`.
 
 Après le `rm -rf` manuel puis le clone :
 
 ```bash
-cd /home/donald/Informatique/C++
+cd /home/donald/informatique/C++
 git clone git@github.com:Valere21/facturo.git
 cd facturo
 npm ci

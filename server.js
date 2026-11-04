@@ -347,6 +347,28 @@ async function mergeInvoices(sourceIds) {
   }
 }
 
+function draftFromArchive(source) {
+  const lines = normaliseLines(source.lines);
+  db.exec('BEGIN');
+  try {
+    const result = run(
+      'INSERT INTO invoices(number,client_id,issue_date,due_date,notes,total_cents) VALUES (?,?,?,?,?,?)',
+      nextNumber(), source.invoice.client_id, source.invoice.issue_date, source.invoice.due_date,
+      source.invoice.notes, invoiceTotal(lines)
+    );
+    for (const line of lines) {
+      run('INSERT INTO invoice_lines(invoice_id,description,quantity,unit_price_cents,tax_included,site_id,service_date,position) VALUES (?,?,?,?,?,?,?,?)',
+        result.lastInsertRowid, line.description, line.quantity, line.unit_price_cents,
+        line.tax_included ? 1 : 0, line.site_id, line.service_date, line.position);
+    }
+    db.exec('COMMIT');
+    return publicInvoice(liveInvoice(result.lastInsertRowid));
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function dueDate(issueDate) {
   const date = new Date(`${issueDate}T12:00:00`);
   date.setDate(date.getDate() + 60);
@@ -497,6 +519,16 @@ app.get('/api/invoices/:id', (req, res) => {
 app.post('/api/invoices/merge', async (req, res, next) => {
   try {
     res.status(201).json(await mergeInvoices(req.body?.invoice_ids));
+  } catch (error) { next(error); }
+});
+app.post('/api/invoices/:id/draft', (req, res, next) => {
+  try {
+    const source = materializedInvoice(req.params.id);
+    if (!source) return res.status(404).json({ error: 'Facture introuvable.' });
+    if (!source.invoice.archived_path || !['issued', 'sent'].includes(source.invoice.status)) {
+      return res.status(409).json({ error: 'Seule une facture archivée peut générer un brouillon.' });
+    }
+    res.status(201).json(draftFromArchive(source));
   } catch (error) { next(error); }
 });
 app.post('/api/invoices', (req, res, next) => {

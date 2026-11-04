@@ -7,10 +7,10 @@ Wants=network-online.target
 Type=simple
 User=donald
 Group=donald
-WorkingDirectory=/home/donald/Informatique/C++/facturo
+WorkingDirectory=/home/donald/informatique/C++/facturo
 EnvironmentFile=/home/donald/.config/facturo/facturo.env
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/node /home/donald/Informatique/C++/facturo/server.js
+ExecStart=/usr/bin/node /home/donald/informatique/C++/facturo/server.js
 Restart=on-failure
 RestartSec=5
 

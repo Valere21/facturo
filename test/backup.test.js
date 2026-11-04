@@ -67,7 +67,7 @@ function makeBackup() {
     status: 'issued',
     issue_date: '2026-01-02',
     due_date: '2026-02-01',
-    notes: '',
+    notes: 'Note interne de la facture archivée',
     total_cents: 10000,
     archived_path: 'storage/archive/2026/facture-001.pdf',
     archive_sha256: archivedDigest,
@@ -236,6 +236,58 @@ test('restores settings, clients, sites, drafts and archived PDFs on a fresh ins
 
     const sourceAfterMerge = await (await fetch(`http://127.0.0.1:${port}/api/invoices/10`)).json();
     assert.equal(sourceAfterMerge.status, 'issued');
+    const sourcePdf = await fs.readFile(path.join(archiveDir, '2026', 'facture-001.pdf'));
+    const duplicateResponse = await fetch(`http://127.0.0.1:${port}/api/invoices/10/draft`, { method: 'POST' });
+    assert.equal(duplicateResponse.status, 201);
+    const copy = await duplicateResponse.json();
+    assert.equal(copy.status, 'draft');
+    assert.equal(copy.number, '004');
+    assert.equal(copy.client_id, sourceAfterMerge.client_id);
+    assert.equal(copy.issue_date, sourceAfterMerge.issue_date);
+    assert.equal(copy.due_date, sourceAfterMerge.due_date);
+    assert.equal(copy.notes, sourceAfterMerge.notes);
+    assert.equal(copy.total_cents, sourceAfterMerge.total_cents);
+    assert.equal(copy.archived_path, null);
+    assert.equal(copy.archive_sha256, null);
+    assert.equal(copy.verified_at, null);
+    assert.equal(copy.snapshot, null);
+    assert.deepEqual(copy.lines.map(line => ({
+      description: line.description,
+      quantity: line.quantity,
+      unit_price_cents: line.unit_price_cents,
+      tax_included: line.tax_included,
+      site_id: line.site_id,
+      service_date: line.service_date
+    })), sourceAfterMerge.lines.map(line => ({
+      description: line.description,
+      quantity: line.quantity,
+      unit_price_cents: line.unit_price_cents,
+      tax_included: line.tax_included,
+      site_id: line.site_id,
+      service_date: line.service_date
+    })));
+    assert.deepEqual(await fs.readFile(path.join(archiveDir, '2026', 'facture-001.pdf')), sourcePdf);
+    assert.equal((await (await fetch(`http://127.0.0.1:${port}/api/invoices/10`)).json()).status, 'issued');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/invoices/11/draft`, { method: 'POST' })).status, 409);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/invoices/9999/draft`, { method: 'POST' })).status, 404);
+
+    const editedCopy = await fetch(`http://127.0.0.1:${port}/api/invoices/${copy.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        number: copy.number,
+        client_id: copy.client_id,
+        issue_date: copy.issue_date,
+        due_date: copy.due_date,
+        notes: 'Correction en brouillon',
+        lines: [{ ...copy.lines[0], description: 'Prestation corrigée' }]
+      })
+    });
+    assert.equal(editedCopy.status, 200);
+    assert.equal((await editedCopy.json()).lines[0].description, 'Prestation corrigée');
+    assert.equal((await (await fetch(`http://127.0.0.1:${port}/api/invoices/10`)).json()).lines[0].description, 'Prestation archivée');
+    assert.deepEqual(await fs.readFile(path.join(archiveDir, '2026', 'facture-001.pdf')), sourcePdf);
+
     const deleted = await fetch(`http://127.0.0.1:${port}/api/invoices/10`, { method: 'DELETE' });
     assert.equal(deleted.status, 204);
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/invoices/10`)).status, 404);

@@ -146,7 +146,7 @@ function renderEditor() {
   const serviceOptions = state.services.map(s => `<option value="${s.id}">${esc(s.name)} · ${euro(s.unit_price_cents)}</option>`).join('');
   const lines = e.lines.length ? e.lines.map((line, index) => `<div class="line-grid"><select class="select site-line" data-line="${index}" data-key="site_id" ${immutable ? 'disabled' : ''}>${siteOptions(line.site_id)}</select><input class="input description" data-line="${index}" data-key="description" value="${esc(line.description)}" placeholder="Description" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="quantity" type="number" step="1" min="1" value="${line.quantity}" ${immutable ? 'disabled' : ''}><input class="input date" data-line="${index}" data-key="service_date" type="date" value="${line.service_date || ''}" ${immutable ? 'disabled' : ''}><input class="input" data-line="${index}" data-key="unit_price" type="number" step="0.01" min="0" value="${(line.unit_price_cents / 100).toFixed(2)}" ${immutable ? 'disabled' : ''}><label class="tax-check"><input data-line="${index}" data-key="tax_included" type="checkbox" ${taxIncluded(line.tax_included) ? 'checked' : ''} ${immutable ? 'disabled' : ''}><span>${taxIncluded(line.tax_included) ? 'comprise' : '+ 20%'}</span></label><span class="line-total total">${euro(lineAmount(line))}</span>${immutable ? '<span></span>' : `<button class="remove-line" data-action="remove-line" data-index="${index}" title="Retirer">×</button>`}</div>`).join('') : '<p class="empty">Ajoutez une ligne de prestation.</p>';
   const total = e.lines.reduce((sum, l) => sum + lineAmount(l), 0);
-  const archive = immutable ? `<button class="button secondary" data-action="check-archive" data-id="${e.id}">Vérifier l’archive</button><button class="button ghost" data-action="email" data-id="${e.id}">Envoyer par e-mail</button>` : '';
+  const archive = immutable ? `<button class="button secondary" data-action="check-archive" data-id="${e.id}">Vérifier l’archive</button><button class="button ghost" data-action="email" data-id="${e.id}">Envoyer par e-mail</button>${e.archived_path ? `<button class="button secondary" data-action="generate-draft" data-id="${e.id}">Générer le brouillon</button>` : ''}` : '';
   const pendingEmail = !immutable ? '<button class="button ghost" disabled title="Disponible après l’archivage">Envoyer par e-mail</button>' : '';
   app.innerHTML = `<div class="editor"><header class="view-header"><div><p class="eyebrow">${immutable ? 'Document émis' : 'Brouillon'}</p><h1>Facture ${esc(e.number)}</h1><p class="subhead">${immutable ? 'Cette facture est verrouillée pour préserver l’archive.' : 'Préparez les lignes puis émettez le document une fois vérifié.'}</p></div><button class="button ghost" data-action="back-invoices">← Toutes les factures</button></header>
   <section class="invoice-top"><article class="card invoice-meta"><h2>Informations</h2><div class="form-grid"><div class="field"><label>Numéro</label>${immutable ? `<div class="invoice-number">${esc(e.number)}</div>` : `<input class="input invoice-number-input" data-invoice="number" inputmode="numeric" pattern="[0-9]+" value="${esc(e.number)}"><p class="helper">Modifiable : la prochaine facture suivra ce numéro.</p>`}</div><div class="field"><label>Statut</label>${invoiceBadge(e)}</div><div class="field"><label>Date d’émission</label><input class="input" data-invoice="issue_date" type="date" value="${e.issue_date}" ${immutable ? 'disabled' : ''}></div><div class="field"><label>Échéance</label><input class="input" data-invoice="due_date" type="date" value="${e.due_date || ''}" ${immutable ? 'disabled' : ''}></div></div></article>
@@ -201,6 +201,16 @@ async function newInvoice() {
   if (!state.clients.length) { toast('Ajoutez d’abord un client.', true); location.hash = '#clients'; return; }
   const invoice = await api('/api/invoices', { method:'POST', body:JSON.stringify({ client_id: state.clients[0].id, issue_date: today() }) });
   state.editor = { ...invoice, lines: [freshLine()] }; location.hash = `#invoice/${invoice.id}`;
+}
+
+async function generateDraftFromArchive(id) {
+  const sourceNumber = state.editor?.number;
+  const draft = await api(`/api/invoices/${id}/draft`, { method: 'POST' });
+  await refresh();
+  state.editor = draft;
+  location.hash = `#invoice/${draft.id}`;
+  renderEditor();
+  toast(`Brouillon ${draft.number} créé depuis la facture ${sourceNumber}. L’archive est conservée.`);
 }
 
 function startMerge() {
@@ -309,6 +319,10 @@ app.addEventListener('click', async event => {
   const { action, id, index } = button.dataset;
   try {
     if (action === 'new-invoice') await newInvoice();
+    if (action === 'generate-draft' && !button.disabled) {
+      button.disabled = true;
+      try { await generateDraftFromArchive(id); } finally { button.disabled = false; }
+    }
     if (action === 'start-merge') startMerge();
     if (action === 'cancel-merge') cancelMerge();
     if (action === 'toggle-merge') { event.stopPropagation(); toggleMergeSelection(id); return; }
